@@ -1,0 +1,10 @@
+# Windows の Git は既定の core.autocrlf=true により、clone 時にテキストを CRLF へ
+# 書き換える。シェルスクリプトが CRLF になると bash は $'\r': command not found で
+# 即座に失敗し、dist/RANK.C は改行が変われば build.sh のハッシュ照合が食い違って
+# EXE が古いものと判定される。作業ツリーまで LF に固定して、どの OS でも同じバイト
+# 列が手に入るようにする。DOS が要求する CRLF は 98hdd send が転送時に与える。
+* text=auto eol=lf
+
+# バイナリ。改行変換もテキスト差分もさせない。
+*.exe binary
+*.EXE binary
