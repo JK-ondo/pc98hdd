@@ -1,0 +1,50 @@
+[tasks.verify]
+description = "すべての検査を走らせる"
+depends = ["verify:*"]
+
+# 検査対象のシェルスクリプト。増えたらここに足す。
+[tasks."verify:syntax"]
+description = "シェルスクリプトの構文検査"
+run = '''
+for f in 98hdd.sh nx93rank/tests/run.sh nx93rank/build.sh; do
+    bash -n "$f" || exit 1
+done
+'''
+
+# 変数展開の直後に非ASCIIバイトを置くことを禁じる。
+# macOS の bash 3.2 は UTF-8 ロケールで 0x80 以上のバイトを変数名の一部と
+# みなすため、"$var（...）" は ${var\xef} を参照してしまう。set -u 下では
+# その行が unbound variable で異常終了する。${var} と波括弧で囲めば安全。
+#
+# grep は実装によってリテラルなバイト範囲の扱いが異なり、PATH 上のどれが
+# 使われるかで結果が変わる。macOS に必ずある BSD grep に固定する。
+[tasks."verify:encoding"]
+description = "変数展開の直後に非ASCIIバイトが来る箇所を検出する"
+run = '''
+pattern=$(printf '\$[A-Za-z_][A-Za-z_0-9]*[\200-\377]')
+status=0
+for f in 98hdd.sh nx93rank/tests/run.sh; do
+    if LC_ALL=C /usr/bin/grep -n "$pattern" "$f"; then
+        echo "${f}: 上記は変数名が非ASCIIバイトまで伸びます。\${name} と波括弧で囲んでください。" >&2
+        status=1
+    fi
+done
+exit $status
+'''
+
+[tasks."verify:nx93rank"]
+description = "NX93 週次ランキングリセットの回帰テスト"
+run = "nx93rank/tests/run.sh"
+
+# dist/RANK.EXE が今の dist/RANK.C から作られたものであることを確かめる。
+# docker は使わない。未ビルドなら通し、古いときだけ落ちる（98 へ古い実行形式が
+# 送られるほうだけが事故なので、そちら側に閉じる）。
+[tasks."verify:nx93rank-binary"]
+description = "dist/RANK.EXE が RANK.C と同期しているか"
+run = "nx93rank/build.sh --check"
+
+# RANK.EXE を ia16-elf-gcc（Docker）でビルドする。docker が要るので verify には
+# 繋がない。98 上の QCL RANK.C は保険として残してある。
+[tasks."build:nx93rank"]
+description = "RANK.EXE を Mac 上でクロスコンパイルする"
+run = "nx93rank/build.sh"
