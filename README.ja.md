@@ -30,7 +30,7 @@ BlueSCSI の microSD を持ち運ぶことで、PC-98 アーキテクチャの�
 | PC-98 実機      | 下の対応機種を参照                                |
 | BlueSCSI v2     | SCSI ID 1 / LUN 0 / 512 bytes-per-sector で運用中 |
 | microSD カード  | Mac に挿すとボリューム名 `x` でマウントされること |
-| Mac             | ここで `98hdd` を動かす(Apple Silicon で開発)     |
+| Mac             | ここで `98hdd` を動かす。macOS 専用(Apple Silicon で開発) |
 
 #### 対応機種
 
@@ -58,6 +58,26 @@ SD カード上の HDD イメージは `HD10_512 200MB.hda`(200MB / FAT16 1 パ�
 - `iconv` `file` — macOS 標準
 
 mtools と nkf が入っていない場合は Homebrew などで導入してください(`mtools` と `nkf` の 2 つ)。
+
+### Windows について
+
+**これは macOS 向けの道具です。Windows は未確認です。**
+
+ただしスクリプトの中身に macOS 固有のものはほとんどありません。イメージのパスは
+`~/.98hddrc` で上書きできる既定値にすぎず、呼んでいるコマンドはすべて POSIX の範囲です。
+WSL2 に `mtools` と `nkf` を入れ、`HDD_IMAGE` と `~/.mtoolsrc` の `file=` を SD カード
+(`/mnt/e/...`)へ向けて `mount -t drvfs` でマウントすれば、おそらく動きます。先に
+引っかかるのは次の 2 点です。
+
+- **改行コード。** Windows の Git は既定が `core.autocrlf=true` なので、シェルスクリプトが
+  CRLF で展開され、bash が `$'\r': command not found` で死にます。`.gitattributes` で
+  木全体を LF に固定してあるのは、これを防ぐためです
+- **`98hdd` はシンボリックリンク。** `core.symlinks=true` でないと Git は代わりに 9 バイトの
+  テキストファイルを置くので、`./98hdd` は動きません。`bash 98hdd.sh` を使ってください
+
+とはいえ Windows なら別の道具のほうが素直です。**DiskExplorer** は PC-98 のディスク
+イメージを GUI で直接読み書きできますし、ImDisk や OSFMount なら `offset=360448` を
+指定してドライブレターに割り当てられます。
 
 ---
 

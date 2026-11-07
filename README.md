@@ -34,7 +34,7 @@ Internals are documented in [SPEC.md](SPEC.md) (Japanese). This file is usage on
 | A PC-98 machine | see supported machines below                   |
 | BlueSCSI v2   | run as SCSI ID 1 / LUN 0 / 512 bytes-per-sector  |
 | microSD card  | must mount on the Mac as volume name `x`         |
-| Mac           | runs `98hdd` (developed on Apple Silicon)        |
+| Mac           | runs `98hdd`. macOS only — developed on Apple Silicon |
 
 #### Supported machines
 
@@ -64,6 +64,26 @@ is missing.
 - `iconv` `file` — shipped with macOS
 
 Install mtools and nkf if you do not have them (`brew install mtools nkf`).
+
+### About Windows
+
+**This is a macOS tool. Windows is unverified.**
+
+For what it is worth, hardly anything in the script is macOS-specific: the image path is
+a default you override in `~/.98hddrc`, and every command it calls is POSIX. Under WSL2
+with `mtools` and `nkf` installed it would most likely run, once you point `HDD_IMAGE`
+and the `file=` line in `~/.mtoolsrc` at the card (`/mnt/e/...`) and mount it with
+`mount -t drvfs`. Two things would trip you up first:
+
+- **Line endings.** Git for Windows defaults to `core.autocrlf=true`, which would check
+  the shell scripts out as CRLF and make bash die with `$'\r': command not found`.
+  `.gitattributes` pins the whole tree to LF to prevent exactly that.
+- **`98hdd` is a symlink.** Without `core.symlinks=true` Git writes a 9-byte text file
+  in its place and `./98hdd` will not run. Use `bash 98hdd.sh`.
+
+Even so, on Windows you probably want something else. **DiskExplorer** reads and writes
+PC-98 disk images directly with a GUI, and ImDisk or OSFMount will mount the image at
+`offset=360448` as an ordinary drive letter.
 
 ---
 
