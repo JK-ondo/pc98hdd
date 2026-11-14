@@ -214,29 +214,41 @@ run_static "S6' no-ctype-classify"     check_no_ctype_classify
 HARNESS="-x c -std=gnu89 -Wall -Wextra -Werror -g"
 SAN="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
 
-# H2: test_daily.c のビルド失敗を「名前の付いた 1 件の失敗」として数える。
-#     黙って通すと以降のケースが 1 件も走らないまま緑になる（既存 H1 と同型）。
+# H2・H3: 2 本のハーネスのビルド失敗を、それぞれ「名前の付いた 1 件の失敗」として
+#     数える。黙って通すと以降のケースが 1 件も走らないまま緑になる（既存 H1 と同型）。
+#
+#     2 本は別々のバイナリなので、片方のビルド失敗でもう片方の検査を飛ばさない。
+#     両方を試してから走行相の前で止まる。実装前は両方が未宣言シンボルで赤くなるので、
+#     ここで止めると 1 回の実行で片方の未宣言一覧しか見えない。
+built=0
+
+# H2: 単体・統合のハーネス。
 # shellcheck disable=SC2086
 if ! clang ${HARNESS} ${SAN} \
       -DRANK_NO_MAIN -DRANK_TEST_CLOCK -DRANK_TEST_FAULT \
       "-DRANK_C_PATH=\"${rank_c}\"" \
       "${here}/test_daily.c" -o "${work}/test_daily"; then
     report_fail "H2 daily-harness-build: test_daily.c がビルドできません。"
-    summary_and_exit
+    built=1
+else
+    report_ok "H2 daily-harness-build"
 fi
-report_ok "H2 daily-harness-build"
 
-# H3: test_cli.c も同じ扱い。こちらは `#define main rank_entry` で本物の main を
-#     取り込むので RANK_NO_MAIN を渡さない（argc/argv/usage/終了コードを通す）。
+# H3: CLI のハーネス。`#define main rank_entry` で本物の main を取り込むので
+#     RANK_NO_MAIN を渡さない（argc/argv/usage/終了コードを通す）。
 # shellcheck disable=SC2086
 if ! clang ${HARNESS} ${SAN} \
       -DRANK_TEST_CLOCK -DRANK_TEST_FAULT \
       "-DRANK_C_PATH=\"${rank_c}\"" \
       "${here}/test_cli.c" -o "${work}/test_cli"; then
     report_fail "H3 cli-harness-build: test_cli.c がビルドできません。"
-    summary_and_exit
+    built=1
+else
+    report_ok "H3 cli-harness-build"
 fi
-report_ok "H3 cli-harness-build"
+
+# 走らせる実体が無いので、ここから先へは進めない。
+if [ "${built}" -ne 0 ]; then summary_and_exit; fi
 
 # タイムゾーンを変えて同じ結果になることを要求する。暦境界の計算に mktime や
 # localtime が紛れ込むと、夏時間の切替を跨いだ日付が 1 日ずれて跨ぎ判定が飛ぶ。
