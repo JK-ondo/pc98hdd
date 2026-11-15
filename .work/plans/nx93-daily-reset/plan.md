@@ -1,7 +1,7 @@
 ---
 goal: RANK.EXE に毎日更新を追加し、週次／毎日をコマンドライン引数で切り替えられるようにする。判定を「経過日数」から「境界を跨いだか」へ変え、JSON へ積む台帳をやめて歴代 30 件とユーザ別ハイスコア表の 2 枚にまとめる
 state: T0〜T4 完了。試験 85 ケースを実装前の赤として置いた（`tests/test_daily.c` 5,336 行・78 ケース、`tests/test_cli.c` 1,058 行・7 ケース）。`run-daily.sh` は 4 失敗／3 成功で、H2・H3 が未宣言シンボルの名前付き赤を出す。未宣言は spec §3.9 の新 API だけであることを 1 名ずつ数えて確認した。`mise run verify` は 61 ケース緑×3TZ のまま。`dist/RANK.C` は未改変で、現行の RANK.EXE（週次・JSON 台帳）が実機で動いている。設計の食い違いは計 14 件見つかり全部訂正済み（12 件は test-designer が独立検証、2 件は私が検算して直した）。仕様の文言 2 件も決定 12・13 として反映済みで、未決は残っていない。
-next: T8（新 API の追加・加算のみで `rank_run` は不変）、続いて T9。あわせて T6・T7 の受け入れ確認（ユーザー作業・docker）を `mise run build:nx93rank` 1 回で済ませる。T0〜T7 完了。**`run.sh` は 61 ケース・982 表明・0 failure ×3TZ** で、`verify` は `verify:nx93rank-binary` のみ赤（決定 9 の想定どおり。`RANK.C` を触ると sha256 照合が必ず食い違う）。静的領域は T7 で 1 バイトも増えていない。
+next: T9（`rank_run` の分解・`rank_commit` の一般化と `rank_stage`・移行・旧 writer 削除・CLI・11 条件のメッセージ・`GAME.BAT`・文書）。**ここで `Rank30Table`／`RankWhoTable` の 11,356 B が入るので、静的領域が約 10.2 KB から約 21 KB へ跳ねる。上限 32,768 に本当に収まるかはそのビルドで分かる。** T0〜T8 完了。`run.sh` は 61 ケース・982 表明・0 failure ×3TZ、U 系・X 系は捨ての包みで全緑、残る赤は I 系 31 件と A 系 7 件で、どちらも T9 の範囲。`verify` は `verify:nx93rank-binary` のみ赤（決定 9 の想定どおり）。
 ---
 
 # NyaHaX'93 ランキングの毎日更新
