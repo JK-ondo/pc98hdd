@@ -99,7 +99,8 @@ typedef struct {
     char raw[RANK_MAX_LINE + 1];   /* input bytes verbatim, no CR/LF/0x1A */
     long score;                    /* long: int is 16 bit on the 98 */
     char name[RANK_NAME_LEN + 1];  /* the 8 byte name field, unaltered */
-    char key[RANK_NAME_LEN + 1];   /* name, 0x20 trimmed, ASCII a-z folded up */
+    char key[RANK_NAME_LEN + 1];   /* name, 0x20 and trailing marks trimmed,
+                                    * ASCII a-z folded up; see rank_fold_key */
 } RankRow;
 
 typedef struct {
@@ -398,13 +399,38 @@ int rank_now(RankTime *out)
 
 /* ------------------------------------------------------------------ rows */
 
-/* Trim 0x20 from both ends of the 8 byte name and fold ASCII a-z upwards.
- * Bytes >= 0x80 pass through untouched: the comparison is done on unsigned
- * char precisely so that 0xE0 is not mistaken for a lowercase letter. */
+/* The identity of a player, derived from the 8 byte name field in four steps:
+ *
+ *   1. trim 0x20 from both ends; call what is left the trimmed field;
+ *   2. from the end of it, drop every byte that is ASCII (< 0x80) and not
+ *      A-Z a-z 0-9, and stop at the first byte >= 0x80;
+ *   3. if that left nothing, use the whole trimmed field instead;
+ *   4. fold ASCII a-z upwards.
+ *
+ * Step 2 is there because players mark their own name - omzn@@@@ and
+ * omzn++++ are the same person as omzn - while omzn-2 is somebody else,
+ * because a trailing digit is not a mark.  Matching on a prefix instead
+ * would not work: omzn is a prefix of omzn@@@@ which is a prefix of
+ * omzn@@@@omzn, so "same player" would stop being transitive and would
+ * depend on the order the rows happen to be in.
+ *
+ * Stopping at 0x80 in step 2 is required, not an optimisation.  A name typed
+ * on the 98 is Shift-JIS, and its last byte is almost always >= 0x80; were
+ * those dropped as "not alphanumeric", every Japanese name would collapse to
+ * the empty key and every one of those players would become the same person.
+ * The comparison is done on unsigned char for the same reason that the fold
+ * in step 4 is: on a compiler where char is signed, 0xE0 is negative and
+ * would compare below 0x80.
+ *
+ * Step 3 keeps a name that is nothing but marks distinguishable: @@@@ and
+ * ---- both lose everything in step 2, and without the rescue they would
+ * share the empty key with each other and with a name of eight spaces.
+ */
 static void rank_fold_key(const char *name, char *key)
 {
     int b;
     int e;
+    int t;
     int i;
     unsigned char c;
 
@@ -416,7 +442,24 @@ static void rank_fold_key(const char *name, char *key)
     while (e > b && name[e - 1] == ' ') {
         e--;
     }
-    for (i = 0; b + i < e; i++) {
+
+    t = e;
+    while (t > b) {
+        c = (unsigned char)name[t - 1];
+        if (c >= 0x80) {
+            break;
+        }
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+         || (c >= '0' && c <= '9')) {
+            break;
+        }
+        t--;
+    }
+    if (t == b) {
+        t = e;
+    }
+
+    for (i = 0; b + i < t; i++) {
         c = (unsigned char)name[b + i];
         if (c >= 'a' && c <= 'z') {
             c = (unsigned char)(c - 'a' + 'A');
@@ -491,6 +534,31 @@ const char *rank_default_line(int i)
         return NULL;
     }
     return lines[i];
+}
+
+/* Which of the shipped rows this line is, or -1 for none of them.
+ *
+ * The test is whole-line equality and nothing weaker.  A shipped row is a
+ * seat holder rather than a record, so it is kept out of the history, and
+ * the only safe way to tell a seat holder from a record is that every byte
+ * agrees: a real player who scores under the name Bio_100% has a different
+ * date, and a player whose key folds to BIO_100 is still a player.  The
+ * chance of someone matching all of score, level, misses, name, date and
+ * mode is small enough to ignore, and if they manage it they lose one row
+ * out of the history, not their place in the table. */
+int rank_is_default_line(const char *raw)
+{
+    int i;
+
+    if (raw == NULL) {
+        return -1;
+    }
+    for (i = 0; i < RANK_ROWS; i++) {
+        if (strcmp(raw, rank_default_line(i)) == 0) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 /* Reads at most RANK_ROWS rows and returns how many, or -1.  An eleventh
@@ -575,12 +643,20 @@ int rank_write_table(FILE *fp, const RankTable *t)
 
 /* Keep one row per player, merge with the shipped table, take the top ten.
  *
+ * Rows of cur that are a shipped row byte for byte are dropped before
+ * deduplication, so they take part in it on neither side.  Without that,
+ * a table that still holds empty seats would treat Bio_100% as a player
+ * whose best is 200000, and the ten shipped rows appended below would put a
+ * second 200000 in the table and push the bottom rows out.  Dropping them
+ * first also makes this function idempotent: feeding its own output back in
+ * reproduces it byte for byte.
+ *
  * A row survives deduplication when no row with the same key beats it on
  * score, and no equal scoring row with the same key came earlier.  That
  * leaves survivors in their original order, which is what makes the stable
  * sort below deterministic for different players on the same score.  The
- * shipped rows are deliberately not deduplicated: ten identical Bio_100%
- * entries are what fills the empty seats. */
+ * shipped rows are deliberately not deduplicated against each other: ten
+ * identical Bio_100% entries are what fills the empty seats. */
 void rank_rebuild(const RankTable *cur, RankTable *out)
 {
     static RankTable work;   /* ~1.7 KB; far too large for the DOS stack */
@@ -600,10 +676,16 @@ void rank_rebuild(const RankTable *cur, RankTable *out)
         n = RANK_ROWS;
     }
     for (i = 0; i < n; i++) {
+        if (rank_is_default_line(cur->row[i].raw) >= 0) {
+            continue;   /* a seat holder, not a record */
+        }
         win = 1;
         for (j = 0; j < n; j++) {
             if (j == i) {
                 continue;
+            }
+            if (rank_is_default_line(cur->row[j].raw) >= 0) {
+                continue;   /* and so it cannot outscore a record either */
             }
             if (strcmp(cur->row[i].key, cur->row[j].key) != 0) {
                 continue;

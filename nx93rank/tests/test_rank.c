@@ -674,13 +674,14 @@ static int json_stray_comma(const char *buf, size_t len)
 
 /* -------------------------------------------------------------- 期待ランキング
  *
- * Derived by hand from plan.md "更新の規則" for the two real inputs.
- * nx93.scr: OMZN/omzn fold to one survivor (327400) and OMZN@@@@ keeps 299370;
- * the eight remaining seats go to the defaults, highest first.
+ * Derived by hand for the two real inputs, under the rule that a trailing
+ * run of non-alphanumeric ASCII in a name is a mark the player put on their
+ * own name and so does not identify anybody.  nx93.scr: every row folds to
+ * the key OMZN, OMZN@@@@ included, so one survivor is left (327400) and the
+ * nine remaining seats go to the defaults, highest first.
  */
 static const char *const UM1_WANT[RANK_ROWS] = {
     "327400 30 01 OMZN     26/09/15 A",
-    "299370 30 00 OMZN@@@@ 61/11/17 A",
     "200000 29 00 Bio_100% 93/10/01 A",
     "180000 28 01 Bio_100% 93/10/01 A",
     "160000 27 02 Bio_100% 93/10/01 A",
@@ -688,7 +689,8 @@ static const char *const UM1_WANT[RANK_ROWS] = {
     "120000 22 04 Bio_100% 93/10/01 A",
     "100000 21 05 Bio_100% 93/10/01 A",
     "080000 19 06 Bio_100% 93/10/01 A",
-    "060000 16 07 Bio_100% 93/10/01 A"
+    "060000 16 07 Bio_100% 93/10/01 A",
+    "040000 13 08 Bio_100% 93/10/01 A"
 };
 
 /* The live nx93.scr as ten rows, which is what a backup taken before the first
@@ -706,10 +708,15 @@ static const char *const SCR_ROWS[RANK_ROWS] = {
     "261740 29 05 omzn     26/09/14 A"
 };
 
-/* nx93.bak survivors are OMZN@@@@ 299370, OMZN++++ 75170, omzn 64830,
- * OMZN$$$$ 54600, OMZN~~~~ 40520, omzo 15030.  Only 299370, 75170 and 64830
- * beat a default.  A lexicographic score comparison would float "98840" above
- * "200000" and wreck the tail, which is what makes this the decisive case. */
+/* nx93.bak holds two players, not seven: OMZN@@@@, OMZN++++, OMZN$$$$,
+ * OMZN~~~~ and omzn all fold to the key OMZN, whose best is 299370, and omzo
+ * is the only other one, whose 15030 loses to the shipped 020000.  So the
+ * nine seats below the survivor go to the defaults.
+ *
+ * This case no longer decides whether scores are compared as numbers or as
+ * text - the five digit rows it used to keep are folded away.  That net is
+ * now U-G10 in test_daily.c, whose ten names all end in an alphanumeric and
+ * so survive the fold. */
 static const char *const UM2_WANT[RANK_ROWS] = {
     "299370 30 00 OMZN@@@@ 61/11/17 A",
     "200000 29 00 Bio_100% 93/10/01 A",
@@ -719,8 +726,8 @@ static const char *const UM2_WANT[RANK_ROWS] = {
     "120000 22 04 Bio_100% 93/10/01 A",
     "100000 21 05 Bio_100% 93/10/01 A",
     "080000 19 06 Bio_100% 93/10/01 A",
-    "75170 30 02 OMZN++++ 35/09/28 A",
-    "64830 30 02 omzn     80/02/01 A"
+    "060000 16 07 Bio_100% 93/10/01 A",
+    "040000 13 08 Bio_100% 93/10/01 A"
 };
 
 /* ------------------------------------------------------------------- S8 契約 */
@@ -1108,11 +1115,11 @@ static void case_up6(void)
     static const struct { const char *name; const char *key; } tab[] = {
         { "omzn    ", "OMZN"     },
         { "OMZN    ", "OMZN"     },
-        { "OMZN@@@@", "OMZN@@@@" },     /* not the same player as OMZN */
+        { "OMZN@@@@", "OMZN"     },     /* trailing marks are the same player */
         { "  AB    ", "AB"       },     /* both ends trimmed */
         { "A B     ", "A B"      },     /* interior space kept */
         { "        ", ""         },     /* nothing left at all */
-        { "Bio_100%", "BIO_100%" },
+        { "Bio_100%", "BIO_100"  },     /* the trailing % goes too */
         { "\340abc\300def", "\340ABC\300DEF" },  /* high bytes untouched */
         { "\340\300\340\300\340\300\340\300",
           "\340\300\340\300\340\300\340\300" }
@@ -1332,31 +1339,62 @@ static void case_um2(void)
 
     bytes = written_bytes(&out, &len);
     if (OK("write succeeded", bytes != NULL)) {
-        EQL("written size", (long)len, 338L);
+        EQL("written size", (long)len, 340L);
         free(bytes);
     }
 }
 
+/* Both directions of the key rule, seen through rank_rebuild: a trailing mark
+ * is a mark of the same player, and a changed letter is somebody else. */
 static void case_um3(void)
 {
+    static const char *const mixed[4] = {
+        "327400 30 01 OMZN     26/09/15 A",
+        "299370 30 00 OMZN@@@@ 61/11/17 A",
+        "286340 30 01 omzn     26/09/15 A",
+        "250000 30 01 omzo     26/09/15 A"
+    };
+    RankTable cur;
     RankTable out;
     int i;
     int omzn = 0;
+    int omzo = 0;
 
     rebuild_of(fix_scr, FIX_SCR_LEN, &out);
     if (!EQL("ten rows out", out.count, RANK_ROWS)) {
         return;
     }
-    EQL("the OMZN/omzn survivor keeps the best score", out.row[0].score, 327400L);
+    EQL("the OMZN survivor keeps the best score", out.row[0].score, 327400L);
     EQS("and it is the row that scored it", out.row[0].name, "OMZN    ");
-    EQL("OMZN@@@@ is a different player", out.row[1].score, 299370L);
-    EQS("OMZN@@@@ name", out.row[1].name, "OMZN@@@@");
+    EQL("OMZN@@@@ is the same player, so a default follows instead",
+        out.row[1].score, 200000L);
     for (i = 0; i < out.count; i++) {
         if (strcmp(out.row[i].key, "OMZN") == 0) {
             omzn++;
         }
     }
     EQL("exactly one row folds to the key OMZN", omzn, 1);
+
+    /* The live nx93.scr has no second player scoring above the shipped
+     * floor, so the "somebody else" half is shown on a table built for it. */
+    table_of(mixed, 4, &cur);
+    memset(&out, 0, sizeof out);
+    rank_rebuild(&cur, &out);
+    if (!EQL("ten rows out of the mixed table", out.count, RANK_ROWS)) {
+        return;
+    }
+    omzn = 0;
+    for (i = 0; i < out.count; i++) {
+        if (strcmp(out.row[i].key, "OMZN") == 0) {
+            omzn++;
+        }
+        if (strcmp(out.row[i].key, "OMZO") == 0) {
+            omzo++;
+        }
+    }
+    EQL("three spellings of OMZN leave one row", omzn, 1);
+    EQL("omzo was not folded into it", omzo, 1);
+    EQS("and omzo keeps its own row", out.row[1].raw, mixed[3]);
 }
 
 static void case_um4(void)
