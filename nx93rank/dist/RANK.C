@@ -1,4 +1,10 @@
-/* RANK.C - weekly reset of the NyaHaX'93 ranking table (A:\GAME\NX93).
+/* RANK.C - daily or weekly reset of the NyaHaX'93 ranking table (A:\GAME\NX93).
+ *
+ * RANK /D resets when the calendar day changes, RANK /W (and no switch at all)
+ * when the week does.  What a reset takes out of NX93.SCR is kept in two plain
+ * text files beside it, RANK30.TXT for the thirty best rows ever seen and
+ * RANKWHO.TXT for each player's own best, and NX93.TXT is left holding nothing
+ * but the instant of the last reset.
  *
  * Cross-build RANK.EXE for DOS on a host with:       nx93rank/build.sh
  * Build on the PC-9801 with Microsoft QuickC 2.00:   QCL RANK.C
@@ -10,8 +16,8 @@
  * passes -x c or copies the file to a lowercase name.
  *
  * The rules this program implements live in
- * .work/plans/nx93-ranking-reset/plan.md; the contract it is tested against
- * lives in .work/plans/nx93-ranking-reset/test-design.md.
+ * .work/plans/nx93-daily-reset/plan.md; the contract it is tested against
+ * lives in .work/plans/nx93-daily-reset/spec.md.
  *
  * Constraints that shape the whole file, none of which a compiler will
  * remind you about:
@@ -70,9 +76,6 @@
 #define RANK_STATE_LEN   45
 #define RANK_STATE_TS_AT 20
 
-/* A reset happens once this many whole days have passed. */
-#define RANK_PERIOD_DAYS 7L
-
 /* Shortest and longest acceptable ranking line.  Everything but the score
  * is fixed width, so the length pins down the score width:
  *   <score> SP <lv:2> SP <miss:2> SP <name:8> SP <date:8> SP <mode:1>
@@ -80,11 +83,6 @@
 #define RANK_FIXED_LEN  26
 #define RANK_MIN_LINE   (RANK_FIXED_LEN + 1)
 #define RANK_MAX_SCORE_DIGITS 9
-
-/* Longest run of whitespace tolerated between "backups": [ and the first
- * element.  Anything longer is not a ledger this program wrote, and the
- * comma placement cannot be decided without buffering it. */
-#define RANK_WS_MAX 64
 
 /* Are we building for MS-DOS?  No single macro is common to every compiler
  * that targets it: QuickC 2.00 defines MSDOS, while ia16-elf-gcc defines
@@ -175,14 +173,6 @@ typedef enum {
     RANK_FAULT_TXT_STRAND,
     RANK_FAULT_RETIRE_RENAME
 } RankFault;
-
-/* The three spellings the weekly suite still uses.  That suite is the green
- * baseline this work must not disturb, and it is rewritten in the same change
- * that replaces the writer it exercises; until then the old names stand for
- * the new ones.  This is test-only surface: the DOS build compiles none of it. */
-#define RANK_FAULT_LEDGER_WRITE  RANK_FAULT_TXT_WRITE
-#define RANK_FAULT_LEDGER_COMMIT RANK_FAULT_TXT_COMMIT
-#define RANK_FAULT_LEDGER_RENAME RANK_FAULT_TXT_RENAME
 
 RankFault rank_test_fault = RANK_FAULT_NONE;
 
@@ -1105,7 +1095,12 @@ static void rank_report_drop(const RankRow *r)
     fputc('\n', stdout);
 }
 
-/* ---------------------------------------------------------------- ledger */
+/* ------------------------------------------------------------ json reading
+ *
+ * Nothing in this program writes JSON any more.  What is left reads it: the
+ * one timestamp NX93.TXT carries, and - once in the life of a machine - the
+ * ledger an older RANK.EXE kept, whose rows are taken into the two plain text
+ * tables and never written back in this form. */
 
 static int rank_is_space(int c)
 {
@@ -1143,64 +1138,6 @@ static int rank_stream_find(FILE *fp, const char *pat)
         }
     }
     return -1;
-}
-
-static int rank_copy_rest(FILE *in, FILE *out)
-{
-    static char buf[512];
-    size_t n;
-
-    for (;;) {
-        n = fread(buf, 1, sizeof buf, in);
-        if (n > 0u && fwrite(buf, 1, n, out) != n) {
-            return -1;
-        }
-        if (n < sizeof buf) {
-            break;
-        }
-    }
-    if (ferror(in)) {
-        return -1;
-    }
-    return 0;
-}
-
-/* JSON string body.  Only what RFC 8259 requires is escaped; bytes >= 0x80
- * are emitted raw so that a Shift-JIS name survives unchanged.  That is the
- * whole point of escaping 0x5C: the second byte of SO, HYOU or NOU is 0x5C
- * and would otherwise open an escape sequence in the ledger. */
-int rank_json_escape(FILE *fp, const char *s, size_t len)
-{
-    static const char hex[] = "0123456789abcdef";
-    size_t i;
-    unsigned char c;
-
-    if (fp == NULL || (s == NULL && len > 0u)) {
-        return -1;
-    }
-    for (i = 0; i < len; i++) {
-        c = (unsigned char)s[i];
-        if (c == '"' || c == '\\') {
-            if (fputc('\\', fp) == EOF || fputc((int)c, fp) == EOF) {
-                return -1;
-            }
-        } else if (c < 0x20u) {
-            if (fputs("\\u00", fp) == EOF) {
-                return -1;
-            }
-            if (fputc(hex[(c >> 4) & 0x0Fu], fp) == EOF) {
-                return -1;
-            }
-            if (fputc(hex[c & 0x0Fu], fp) == EOF) {
-                return -1;
-            }
-        } else {
-            if (fputc((int)c, fp) == EOF) {
-                return -1;
-            }
-        }
-    }
-    return 0;
 }
 
 int rank_ledger_read_last_update(FILE *fp, RankTime *out)
@@ -1248,123 +1185,6 @@ static int rank_ledger_seek_backups(FILE *fp)
         return -1;
     }
     return 0;
-}
-
-static int rank_write_entry(FILE *out, const char *ts, const RankTable *backup)
-{
-    int i;
-
-    if (fputs("    {\r\n      \"backupAt\": \"", out) == EOF) {
-        return -1;
-    }
-    if (fputs(ts, out) == EOF) {
-        return -1;
-    }
-    if (fputs("\",\r\n      \"ranking\": [", out) == EOF) {
-        return -1;
-    }
-    if (backup->count <= 0) {
-        if (fputs("]\r\n    }", out) == EOF) {
-            return -1;
-        }
-        return 0;
-    }
-    for (i = 0; i < backup->count; i++) {
-        if (fputs("\r\n        \"", out) == EOF) {
-            return -1;
-        }
-        if (rank_json_escape(out, backup->row[i].raw,
-                             strlen(backup->row[i].raw)) != 0) {
-            return -1;
-        }
-        if (i + 1 < backup->count) {
-            if (fputs("\",", out) == EOF) {
-                return -1;
-            }
-        } else {
-            if (fputc('"', out) == EOF) {
-                return -1;
-            }
-        }
-    }
-    if (fputs("\r\n      ]\r\n    }", out) == EOF) {
-        return -1;
-    }
-    return 0;
-}
-
-/* Write a fresh ledger into `out`, newest backup first.  `old` may be NULL
- * (first run); otherwise it is read from the start, and everything after
- * its "backups" [ is copied through byte for byte, so the file never has to
- * be held in memory.  A comma is emitted between the new entry and the old
- * text only when the old array actually had an element. */
-int rank_ledger_write(FILE *out, FILE *old, const RankTime *now,
-                      const RankTable *backup)
-{
-    char ts[20];
-    char ws[RANK_WS_MAX];
-    int nws;
-    int c;
-
-    if (out == NULL || now == NULL || backup == NULL) {
-        return -1;
-    }
-    rank_time_format(now, ts);
-
-    if (fputs("{\r\n  \"lastUpdate\": \"", out) == EOF) {
-        return -1;
-    }
-    if (fputs(ts, out) == EOF) {
-        return -1;
-    }
-    if (fputs("\",\r\n  \"backups\": [\r\n", out) == EOF) {
-        return -1;
-    }
-    if (rank_fault(RANK_FAULT_TXT_WRITE)) {
-        return -1;
-    }
-    if (rank_write_entry(out, ts, backup) != 0) {
-        return -1;
-    }
-
-    if (old == NULL) {
-        if (fputs("\r\n  ]\r\n}\r\n", out) == EOF) {
-            return -1;
-        }
-        return 0;
-    }
-
-    if (rank_ledger_seek_backups(old) != 0) {
-        return -1;
-    }
-
-    nws = 0;
-    for (;;) {
-        c = getc(old);
-        if (!rank_is_space(c)) {
-            break;
-        }
-        if (nws >= RANK_WS_MAX) {
-            return -1;
-        }
-        ws[nws] = (char)c;
-        nws++;
-    }
-    if (c == EOF) {
-        return -1;   /* truncated ledger: the array never closes */
-    }
-    if (c != ']') {
-        if (fputc(',', out) == EOF) {
-            return -1;
-        }
-    }
-    if (nws > 0 && fwrite(ws, 1, (size_t)nws, out) != (size_t)nws) {
-        return -1;
-    }
-    if (fputc(c, out) == EOF) {
-        return -1;
-    }
-    return rank_copy_rest(old, out);
 }
 
 /* ------------------------------------------------- state file / old import */
@@ -1825,6 +1645,40 @@ static int rank_exists(const char *path)
 #define RANK_COMMIT_OK        0
 #define RANK_COMMIT_FAILED  (-1)   /* `dst` still holds what it held */
 #define RANK_COMMIT_STRANDED (-2)  /* `dst` is gone; its bytes are in `keep` */
+#define RANK_COMMIT_NOTMOVED (-3)  /* `dst` could not even be moved aside */
+
+/* The file name at the end of a path.  What the screen has to name is what the
+ * user will see in a DIR listing, not the path this program happened to build
+ * out of argv[0]. */
+static const char *rank_basename(const char *path)
+{
+    const char *p;
+    const char *last;
+
+    last = path;
+    for (p = path; *p != '\0'; p++) {
+        if (rank_is_sep((unsigned char)*p)) {
+            last = p + 1;
+        }
+    }
+    return last;
+}
+
+/* W2: the copy left behind by an interrupted run is about to go.
+ *
+ * After a stranded commit (the one failure that leaves a file only under its
+ * retained name) the copy survives the next run as well, because the target is
+ * missing and the discard below is never reached.  The run after that finds the
+ * target in place and the copy in the way, and with GAME.BAT calling RANK every
+ * day that is about a day's notice.  So the discard says so first.  The exit
+ * code stays 0: this is the tidying up a successful reset does. */
+static void rank_report_keep(const char *keep)
+{
+    fputs("RANK: removing ", stdout);
+    fputs(rank_basename(keep), stdout);
+    fputs(", a copy an interrupted run left behind.\n", stdout);
+    rank_say("RANK: save it elsewhere first if you still want it.");
+}
 
 /* Put `tmp` in place of `dst` without ever leaving `dst` missing.
  *
@@ -1833,31 +1687,48 @@ static int rank_exists(const char *path)
  * would leave nothing behind while the caller reported that nothing had
  * changed.  Instead the old file is renamed to `keep`, and if the second
  * rename fails it is renamed back.  Only once `tmp` is in place is `keep`
- * discarded.  The ledger is the whole reason this program exists, so the
- * path that could lose it must be recoverable. */
+ * discarded.  Records are the whole reason this program exists, so the path
+ * that could lose them must be recoverable.
+ *
+ * `keep_retained` leaves the retained copy in place on success, which the
+ * migration's own fourth stage needs: there `keep` is NX93OLD.TXT, and keeping
+ * the old ledger rather than deleting it is the point of retiring it.  That
+ * stage can also be sure the discard above does not fire, because a migration
+ * refuses to start at all when NX93OLD.TXT already exists.
+ *
+ * The three failure flags are distinct on purpose.  `fail_rename` fails the
+ * replacing rename and lets the real recovery rename run, which is the only way
+ * to observe a commit that failed and put the old file back - the recovery is
+ * the entire reason the three steps exist.  `fail_strand` fails both, which is
+ * the only way to reach a stranded commit on a system whose rename back always
+ * succeeds.  Folding them into one flag would leave the recovery untested. */
 static int rank_commit(const char *tmp, const char *dst, const char *keep,
-                       int fail_rename)
+                       int keep_retained, int fail_retire,
+                       int fail_rename, int fail_strand)
 {
     int saved;
 
     saved = 0;
     if (rank_exists(dst)) {
+        if (rank_exists(keep)) {
+            rank_report_keep(keep);   /* W2, before the bytes go */
+        }
         (void)remove(keep);   /* a leftover from an earlier interrupted run */
-        if (rename(dst, keep) != 0) {
-            return RANK_COMMIT_FAILED;   /* dst was never moved */
+        if (fail_retire || rename(dst, keep) != 0) {
+            return RANK_COMMIT_NOTMOVED;   /* dst was never moved */
         }
         saved = 1;
     }
-    if (fail_rename || rename(tmp, dst) != 0) {
+    if (fail_rename || fail_strand || rename(tmp, dst) != 0) {
         if (!saved) {
             return RANK_COMMIT_FAILED;   /* there was nothing to lose */
         }
-        if (rename(keep, dst) != 0) {
+        if (fail_strand || rename(keep, dst) != 0) {
             return RANK_COMMIT_STRANDED;
         }
         return RANK_COMMIT_FAILED;
     }
-    if (saved) {
+    if (saved && !keep_retained) {
         /* Failing here leaves a stray file and nothing else: the next run
          * removes the name before it needs it again. */
         (void)remove(keep);
@@ -1896,211 +1767,605 @@ int rank_mode_parse(const char *arg, int *mode)
     return -1;
 }
 
-int rank_run(const char *dir)
+/* The thirteen names a run may open, built once before anything is opened so
+ * that a directory too deep to hold the longest of them is refused before a
+ * single file has been created (E2).  The five that outlive a run, the four
+ * temporaries the stages write into, and the four the commit step parks the
+ * outgoing file in. */
+static char rank_p_scr[RANK_PATH_MAX];
+static char rank_p_txt[RANK_PATH_MAX];
+static char rank_p_r30[RANK_PATH_MAX];
+static char rank_p_who[RANK_PATH_MAX];
+static char rank_p_retired[RANK_PATH_MAX];
+static char rank_p_tmp_scr[RANK_PATH_MAX];
+static char rank_p_tmp_txt[RANK_PATH_MAX];
+static char rank_p_tmp_r30[RANK_PATH_MAX];
+static char rank_p_tmp_who[RANK_PATH_MAX];
+static char rank_p_old_scr[RANK_PATH_MAX];
+static char rank_p_old_txt[RANK_PATH_MAX];
+static char rank_p_old_r30[RANK_PATH_MAX];
+static char rank_p_old_who[RANK_PATH_MAX];
+
+/* What the reading phase fills in and the writing phase hands to the writers.
+ * At file scope rather than automatic for the reason the types' own comment
+ * gives: RankWhoTable on its own is four times the default DOS stack. */
+static Rank30Table rank_t30;
+static RankWhoTable rank_who;
+static RankTable rank_cur;
+static RankTable rank_next;
+
+/* The instant this run writes into NX93.TXT, read once at the start so that
+ * every file it produces carries the same one. */
+static RankTime rank_at;
+
+/* The four stages, in the only order they ever run in. */
+#define RANK_STAGE_R30 0
+#define RANK_STAGE_WHO 1
+#define RANK_STAGE_SCR 2
+#define RANK_STAGE_TXT 3
+
+/* What NX93.TXT turned out to be. */
+#define RANK_TXT_ABSENT    0
+#define RANK_TXT_CANONICAL 1
+#define RANK_TXT_LEGACY    2   /* an older RANK.EXE's ledger: migrate it */
+#define RANK_TXT_OTHER     3   /* neither, so not ours to replace */
+
+static int rank_paths_init(const char *dir)
 {
-    static RankTable cur;
-    static RankTable next;
-    static char p_scr[RANK_PATH_MAX];
-    static char p_txt[RANK_PATH_MAX];
-    static char p_tmp_scr[RANK_PATH_MAX];
-    static char p_tmp_txt[RANK_PATH_MAX];
-    static char p_old_scr[RANK_PATH_MAX];
-    static char p_old_txt[RANK_PATH_MAX];
-    char daysbuf[16];
-    RankTime now;
-    RankTime last;
-    FILE *ftxt;
-    FILE *fscr;
-    FILE *fout;
-    long days;
+    if (rank_join(rank_p_scr, dir, "NX93.SCR") != 0
+     || rank_join(rank_p_txt, dir, "NX93.TXT") != 0
+     || rank_join(rank_p_r30, dir, "RANK30.TXT") != 0
+     || rank_join(rank_p_who, dir, "RANKWHO.TXT") != 0
+     || rank_join(rank_p_retired, dir, "NX93OLD.TXT") != 0
+     || rank_join(rank_p_tmp_scr, dir, "RANKTMP.SCR") != 0
+     || rank_join(rank_p_tmp_txt, dir, "RANKTMP.TXT") != 0
+     || rank_join(rank_p_tmp_r30, dir, "RANKTMP.30") != 0
+     || rank_join(rank_p_tmp_who, dir, "RANKTMP.WHO") != 0
+     || rank_join(rank_p_old_scr, dir, "RANKOLD.SCR") != 0
+     || rank_join(rank_p_old_txt, dir, "RANKOLD.TXT") != 0
+     || rank_join(rank_p_old_r30, dir, "RANKOLD.30") != 0
+     || rank_join(rank_p_old_who, dir, "RANKOLD.WHO") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static const char *rank_stage_name(int which)
+{
+    switch (which) {
+    case RANK_STAGE_R30: return "RANK30.TXT";
+    case RANK_STAGE_WHO: return "RANKWHO.TXT";
+    case RANK_STAGE_SCR: return "NX93.SCR";
+    default:             return "NX93.TXT";
+    }
+}
+
+static const char *rank_stage_tmp(int which)
+{
+    switch (which) {
+    case RANK_STAGE_R30: return rank_p_tmp_r30;
+    case RANK_STAGE_WHO: return rank_p_tmp_who;
+    case RANK_STAGE_SCR: return rank_p_tmp_scr;
+    default:             return rank_p_tmp_txt;
+    }
+}
+
+static const char *rank_stage_dst(int which)
+{
+    switch (which) {
+    case RANK_STAGE_R30: return rank_p_r30;
+    case RANK_STAGE_WHO: return rank_p_who;
+    case RANK_STAGE_SCR: return rank_p_scr;
+    default:             return rank_p_txt;
+    }
+}
+
+/* Where the outgoing file goes while its replacement is put in place.  Only
+ * the state file's answer depends on anything: a migration retires the old
+ * ledger to NX93OLD.TXT and keeps it, where an ordinary run parks NX93.TXT in
+ * RANKOLD.TXT and discards it once the swap is done. */
+static const char *rank_stage_keep(int which, int migrate)
+{
+    switch (which) {
+    case RANK_STAGE_R30: return rank_p_old_r30;
+    case RANK_STAGE_WHO: return rank_p_old_who;
+    case RANK_STAGE_SCR: return rank_p_old_scr;
+    default:             return migrate ? rank_p_retired : rank_p_old_txt;
+    }
+}
+
+/* The word for the rule this run went by.  Nothing on disk records it - the
+ * crossing test needs no history of it - so the screen is the only place it is
+ * ever said, and both messages that end a run say it. */
+static const char *rank_mode_word(int mode)
+{
+    return (mode == RANK_MODE_DAILY) ? "daily" : "weekly";
+}
+
+static void rank_say_bad_mode(void)
+{
+    rank_say("RANK: ERROR the update rule is neither daily nor weekly.");
+    rank_say("RANK: use RANK /D for daily or RANK /W for weekly.");
+    rank_say("RANK: nothing was changed.");
+}
+
+static void rank_say_stage(const char *name, const char *tail)
+{
+    fputs("RANK: ERROR ", stdout);
+    fputs(name, stdout);
+    fputc(' ', stdout);
+    fputs(tail, stdout);
+    fputc('\n', stdout);
+}
+
+/* Which files this run really did replace before it stopped.  A message that
+ * said only "the reset failed" would hide that the two tables are already new,
+ * and the reader would have no reason to go and look at them; the stage index
+ * is all it takes to tell the truth, because the order is fixed. */
+static void rank_say_changed(int which)
+{
+    int i;
+
+    if (which == RANK_STAGE_R30) {
+        rank_say("RANK: no file had been replaced yet.");
+        return;
+    }
+    fputs("RANK: already replaced:", stdout);
+    for (i = 0; i < which; i++) {
+        fputc(' ', stdout);
+        fputs(rank_stage_name(i), stdout);
+    }
+    fputc('\n', stdout);
+}
+
+static void rank_say_retry(void)
+{
+    rank_say("RANK: run RANK again to carry on from where it stopped.");
+}
+
+/* ---------------------------------------------------- the reading phase */
+
+/* What NX93.TXT is, and when it says the last reset happened.  0 with *kind
+ * and *last set, or -1 with the diagnosis already on the screen.
+ *
+ * The timestamp is read first and by the reader that has always read it, so an
+ * old ledger and a new state file are treated alike up to this point.  Which
+ * of the two it is only matters once a reset is certain, and it is decided by
+ * an exact match rather than by "the timestamp parsed": the path that answer
+ * opens is the one that throws an old ledger away. */
+static int rank_classify_txt(int *kind, RankTime *last)
+{
+    FILE *fp;
+    int canon;
+
+    memset(last, 0, sizeof *last);
+    *kind = RANK_TXT_ABSENT;
+    fp = fopen(rank_p_txt, "rb");
+    if (fp == NULL) {
+        return 0;
+    }
+    if (rank_ledger_read_last_update(fp, last) != 0) {
+        (void)fclose(fp);
+        rank_say("RANK: ERROR NX93.TXT is damaged: lastUpdate cannot be read.");
+        rank_say("RANK: repair it, or delete it to reset on the next run.");
+        rank_say("RANK: nothing was changed.");
+        return -1;
+    }
+    canon = rank_state_check(fp);
+    if (canon) {
+        *kind = RANK_TXT_CANONICAL;
+    } else if (rank_has_backups(fp)) {
+        *kind = RANK_TXT_LEGACY;
+    } else {
+        *kind = RANK_TXT_OTHER;
+    }
+    (void)fclose(fp);
+    return 0;
+}
+
+/* Can all four files be replaced?  Opening for update neither creates nor
+ * truncates, so a file that exists and refuses it is read only - and on DOS a
+ * read only file cannot be deleted either, which would make the rename below
+ * fail halfway.  Asking first keeps that failure free of side effects, and
+ * naming the file turns the answer into something the player can act on. */
+static int rank_check_writable(void)
+{
+    const char *bad;
+
+    bad = (const char *)0;
+    if (!rank_writable(rank_p_r30)) {
+        bad = rank_stage_name(RANK_STAGE_R30);
+    } else if (!rank_writable(rank_p_who)) {
+        bad = rank_stage_name(RANK_STAGE_WHO);
+    } else if (!rank_writable(rank_p_scr)) {
+        bad = rank_stage_name(RANK_STAGE_SCR);
+    } else if (!rank_writable(rank_p_txt)) {
+        bad = rank_stage_name(RANK_STAGE_TXT);
+    }
+    if (bad == NULL) {
+        return 0;
+    }
+    fputs("RANK: ERROR ", stdout);
+    fputs(bad, stdout);
+    fputs(" is read only, so it cannot be replaced.\n", stdout);
+    rank_say("RANK: clear the flag with ATTRIB -R; nothing was changed.");
+    return -1;
+}
+
+/* Read everything and merge everything, writing nothing.  0, or -1 with the
+ * diagnosis on the screen and the disk untouched.
+ *
+ * Every handle this opens is closed before it returns, which is what makes the
+ * phase boundary real: the state file is about to be renamed, and renaming a
+ * file that is still open is not something DOS forgives.  The merge order is
+ * the existing tables, then the rows leaving NX93.SCR, then an old ledger if
+ * there is one, and that order is what makes two rows of equal score land in a
+ * reproducible place. */
+static int rank_collect(int migrate)
+{
+    static RankRow dropped;
+    FILE *fp;
+    int n;
+    int i;
     int rc;
 
-    if (rank_join(p_scr, dir, "NX93.SCR") != 0
-     || rank_join(p_txt, dir, "NX93.TXT") != 0
-     || rank_join(p_tmp_scr, dir, "RANKTMP.SCR") != 0
-     || rank_join(p_tmp_txt, dir, "RANKTMP.TXT") != 0
-     || rank_join(p_old_scr, dir, "RANKOLD.SCR") != 0
-     || rank_join(p_old_txt, dir, "RANKOLD.TXT") != 0) {
-        rank_say("RANK: ERROR the directory name is too long; nothing changed");
-        return 1;
-    }
-
-    if (rank_now(&now) != 0) {
-        rank_say("RANK: ERROR cannot read the clock; nothing changed");
-        return 1;
-    }
-
-    /* The date decides first and unconditionally.  A missing NX93.TXT is
-     * the first run and resets straight away; the backup happens before
-     * anything is discarded, so nothing is lost. */
-    ftxt = fopen(p_txt, "rb");
-    if (ftxt != NULL) {
-        if (rank_ledger_read_last_update(ftxt, &last) != 0) {
-            fclose(ftxt);
-            rank_say("RANK: ERROR NX93.TXT is damaged; nothing changed");
-            return 1;
+    rank_cur.count = 0;
+    fp = fopen(rank_p_scr, "rb");
+    if (fp != NULL) {
+        n = rank_read_table(fp, &rank_cur);
+        (void)fclose(fp);
+        if (n < 0) {
+            rank_say("RANK: ERROR NX93.SCR holds a line that cannot be read,");
+            rank_say("RANK: or more than ten of them.  Repair it by hand;");
+            rank_say("RANK: nothing was changed.");
+            return -1;
         }
-        days = rank_elapsed_days(&last, &now);
-        if (days < 0L) {
-            fclose(ftxt);
+    }
+
+    rank_t30.count = 0;
+    fp = fopen(rank_p_r30, "rb");
+    if (fp != NULL) {
+        n = rank_r30_load(fp, &rank_t30);
+        (void)fclose(fp);
+        if (n < 0) {
+            rank_say("RANK: ERROR RANK30.TXT holds a line that cannot be read,");
+            rank_say("RANK: or more than thirty of them.  Repair it by hand;");
+            rank_say("RANK: nothing was changed.");
+            return -1;
+        }
+    }
+
+    rank_who.count = 0;
+    fp = fopen(rank_p_who, "rb");
+    if (fp != NULL) {
+        n = rank_who_load(fp, &rank_who);
+        (void)fclose(fp);
+        if (n < 0) {
+            rank_say("RANK: ERROR RANKWHO.TXT holds two rows for one player,");
+            rank_say("RANK: a line that cannot be read, or more than a hundred");
+            rank_say("RANK: rows.  Delete RANKWHO.TXT and the next run builds");
+            rank_say("RANK: it again; the past records are in RANK30.TXT.");
+            rank_say("RANK: nothing was changed.");
+            return -1;
+        }
+    }
+
+    if (rank_check_writable() != 0) {
+        return -1;
+    }
+
+    for (i = 0; i < rank_cur.count; i++) {
+        rc = rank_merge30(&rank_t30, &rank_cur.row[i]);
+        if (rc == 0) {
+            rc = rank_mergewho(&rank_who, &rank_cur.row[i], &dropped);
+        }
+        if (rc < 0) {
+            rank_say("RANK: ERROR the records could not be merged;");
+            rank_say("RANK: nothing was changed.");
+            return -1;
+        }
+        if (rc == 1) {
+            rank_report_drop(&dropped);   /* W1 */
+        }
+    }
+
+    if (migrate) {
+        fp = fopen(rank_p_txt, "rb");
+        if (fp == NULL || rank_import_ledger(fp, &rank_t30, &rank_who) != 0) {
+            if (fp != NULL) {
+                (void)fclose(fp);
+            }
+            rank_say("RANK: ERROR the old NX93.TXT could not be read to the");
+            rank_say("RANK: end, so none of it was taken over.  Repair it and");
+            rank_say("RANK: the next run tries again; nothing was changed.");
+            return -1;
+        }
+        (void)fclose(fp);
+    }
+
+    rank_rebuild(&rank_cur, &rank_next);
+    return 0;
+}
+
+/* ---------------------------------------------------- the writing phase */
+
+/* One stage: write the temporary, then put it in place of the real file.
+ *
+ * The temporary is removed on every failing path, so no run leaves one behind.
+ * The failure flags arrive as plain ints rather than as a fault enumerator,
+ * which is what keeps the test seam out of the DOS build: there rank_fault is
+ * a macro that discards its argument, so the enumerator's name never reaches
+ * the compiler at all. */
+static int rank_stage(int which, int migrate, int f_write, int f_commit,
+                      int f_retire, int f_rename, int f_strand)
+{
+    const char *tmp;
+    const char *dst;
+    const char *keep;
+    const char *name;
+    FILE *fp;
+    int rc;
+
+    tmp = rank_stage_tmp(which);
+    dst = rank_stage_dst(which);
+    keep = rank_stage_keep(which, migrate);
+    name = rank_stage_name(which);
+
+    fp = fopen(tmp, "wb");
+    if (fp == NULL) {
+        fputs("RANK: ERROR cannot create ", stdout);
+        fputs(rank_basename(tmp), stdout);
+        fputs(", so ", stdout);
+        fputs(name, stdout);
+        fputs(" is unchanged.\n", stdout);
+        rank_say_changed(which);
+        rank_say("RANK: make room on the disk, or clear ATTRIB -R, and run");
+        rank_say("RANK: RANK again.");
+        return -1;
+    }
+    switch (which) {
+    case RANK_STAGE_R30:
+        rc = rank_rows_write(fp, rank_t30.row, rank_t30.count);
+        break;
+    case RANK_STAGE_WHO:
+        rc = rank_rows_write(fp, rank_who.row, rank_who.count);
+        break;
+    case RANK_STAGE_SCR:
+        rc = rank_write_table(fp, &rank_next);
+        break;
+    default:
+        rc = rank_state_write(fp, &rank_at);
+        break;
+    }
+    if (rc != 0 || f_write) {
+        (void)fclose(fp);
+        (void)remove(tmp);
+        rank_say_stage(name, "could not be written; it is unchanged.");
+        rank_say_changed(which);
+        rank_say_retry();
+        return -1;
+    }
+    if (fclose(fp) != 0) {
+        (void)remove(tmp);
+        rank_say_stage(name, "could not be closed; it is unchanged.");
+        rank_say_changed(which);
+        rank_say_retry();
+        return -1;
+    }
+    if (f_commit) {
+        (void)remove(tmp);
+        rank_say_stage(name, "was not replaced: the swap never started.");
+        rank_say_changed(which);
+        rank_say_retry();
+        return -1;
+    }
+
+    rc = rank_commit(tmp, dst, keep,
+                     (which == RANK_STAGE_TXT) ? migrate : 0,
+                     f_retire, f_rename, f_strand);
+    if (rc == RANK_COMMIT_OK) {
+        return 0;
+    }
+    (void)remove(tmp);
+    if (rc == RANK_COMMIT_STRANDED) {
+        rank_say_stage(name, "could not be put back after a failed swap.");
+        fputs("RANK: every byte it held is in ", stdout);
+        fputs(rank_basename(keep), stdout);
+        fputs(" - rename that back\n", stdout);
+        fputs("RANK: to ", stdout);
+        fputs(name, stdout);
+        fputs(" by hand before running RANK again.\n", stdout);
+        rank_say_changed(which);
+    } else if (rc == RANK_COMMIT_NOTMOVED) {
+        rank_say_stage(name, "could not be moved aside; it is unchanged.");
+        rank_say_changed(which);
+        rank_say_retry();
+    } else {
+        rank_say_stage(name, "was not replaced; it is as it was before.");
+        rank_say_changed(which);
+        rank_say_retry();
+    }
+    return -1;
+}
+
+/* The four stages, spelled out one after another rather than driven from a
+ * table, because the order is a contract and not a configuration.
+ *
+ * NX93.SCR is the only file a reset takes anything away from, so the two
+ * tables that receive those rows have to be on disk before it is touched; and
+ * the state file comes last, because a run that recorded the reset and then
+ * failed to rewrite NX93.SCR would never reset again.  Stopping at the first
+ * failure is what makes the half-done states enumerable at all. */
+static int rank_write_all(int migrate)
+{
+    if (rank_stage(RANK_STAGE_R30, migrate,
+                   rank_fault(RANK_FAULT_R30_WRITE),
+                   rank_fault(RANK_FAULT_R30_COMMIT),
+                   0,
+                   rank_fault(RANK_FAULT_R30_RENAME),
+                   rank_fault(RANK_FAULT_R30_STRAND)) != 0) {
+        return -1;
+    }
+    if (rank_stage(RANK_STAGE_WHO, migrate,
+                   rank_fault(RANK_FAULT_WHO_WRITE),
+                   rank_fault(RANK_FAULT_WHO_COMMIT),
+                   0,
+                   rank_fault(RANK_FAULT_WHO_RENAME),
+                   rank_fault(RANK_FAULT_WHO_STRAND)) != 0) {
+        return -1;
+    }
+    if (rank_stage(RANK_STAGE_SCR, migrate,
+                   rank_fault(RANK_FAULT_SCR_WRITE),
+                   rank_fault(RANK_FAULT_SCR_COMMIT),
+                   0,
+                   rank_fault(RANK_FAULT_SCR_RENAME),
+                   rank_fault(RANK_FAULT_SCR_STRAND)) != 0) {
+        return -1;
+    }
+    if (rank_stage(RANK_STAGE_TXT, migrate,
+                   rank_fault(RANK_FAULT_TXT_WRITE),
+                   rank_fault(RANK_FAULT_TXT_COMMIT),
+                   rank_fault(RANK_FAULT_RETIRE_RENAME),
+                   rank_fault(RANK_FAULT_TXT_RENAME),
+                   rank_fault(RANK_FAULT_TXT_STRAND)) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------------ a run
+ *
+ * Read everything, decide, then write.  The decision is made entirely from
+ * what was read, and the first byte is written only after the last handle has
+ * been closed.  A run that decides not to reset writes nothing at all - not
+ * even a note that it looked - which is what lets an old ledger sit there
+ * untouched until the first crossing. */
+int rank_run(const char *dir, int mode)
+{
+    RankTime last;
+    char daysbuf[16];
+    int kind;
+    int crossed;
+    int migrate;
+
+    if (mode != RANK_MODE_WEEKLY && mode != RANK_MODE_DAILY) {
+        rank_say_bad_mode();
+        return 1;
+    }
+    if (rank_paths_init(dir) != 0) {
+        rank_say("RANK: ERROR the directory name is too long to build a file");
+        rank_say("RANK: name in; put the game nearer the root of the drive.");
+        rank_say("RANK: nothing was changed.");
+        return 1;
+    }
+    if (rank_now(&rank_at) != 0) {
+        rank_say("RANK: ERROR the clock cannot be read; set it with DATE and");
+        rank_say("RANK: TIME, then try again.  Nothing was changed.");
+        return 1;
+    }
+    if (rank_classify_txt(&kind, &last) != 0) {
+        return 1;
+    }
+
+    if (kind == RANK_TXT_ABSENT) {
+        crossed = 1;   /* nothing records a reset, so this run is the first */
+    } else {
+        /* A clock that went backwards comes first and in full: parking
+         * lastUpdate in the future would hold the reset off indefinitely, and a
+         * comparison that stopped at the date could not see a clock nudged back
+         * a few hours inside one day. */
+        if (rank_time_before(&rank_at, &last)) {
             rank_say("RANK: ERROR NX93.TXT is dated in the future.");
-            rank_say("RANK: the clock has gone backwards - set it with DATE.");
-            rank_say("RANK: nothing changed.");
+            rank_say("RANK: the clock has gone backwards - set it with DATE");
+            rank_say("RANK: and TIME.  Nothing was changed.");
             return 1;
         }
-        if (days < RANK_PERIOD_DAYS) {
-            fclose(ftxt);
-            rank_put_days(days, daysbuf);
-            fputs("RANK: last reset was ", stdout);
+        crossed = rank_crossed(&last, &rank_at, mode);
+        if (crossed < 0) {
+            rank_say_bad_mode();
+            return 1;
+        }
+        if (crossed == 0) {
+            rank_put_days(rank_elapsed_days(&last, &rank_at), daysbuf);
+            fputs("RANK: ", stdout);
+            fputs(rank_mode_word(mode), stdout);
+            fputs(" rule: last reset was ", stdout);
             fputs(daysbuf, stdout);
-            fputs(" day(s) ago; nothing to do\n", stdout);
+            fputs(" day(s) ago; nothing to do.\n", stdout);
             return 0;
         }
-        /* A ledger whose backups array is unusable is damaged, and saying so
-         * now keeps the diagnosis honest and creates no temporary file. */
-        rewind(ftxt);
-        if (rank_ledger_seek_backups(ftxt) != 0) {
-            fclose(ftxt);
-            rank_say("RANK: ERROR NX93.TXT has no usable backups list.");
-            rank_say("RANK: repair or delete NX93.TXT; nothing changed.");
-            return 1;
-        }
-        rewind(ftxt);
     }
 
-    /* A missing NX93.SCR is not an error, just an empty table: a fresh
-     * install repairs itself.  A line that cannot be read is an error. */
-    cur.count = 0;
-    fscr = fopen(p_scr, "rb");
-    if (fscr != NULL) {
-        int rows;
-
-        rows = rank_read_table(fscr, &cur);
-        fclose(fscr);
-        if (rows < 0) {
-            if (ftxt != NULL) {
-                fclose(ftxt);
-            }
-            rank_say("RANK: ERROR NX93.SCR has a bad or extra line; nothing changed");
-            return 1;
-        }
+    /* A reset is certain from here, so what NX93.TXT is becomes the question.
+     * Anything that is neither this program's state file nor an older one's
+     * ledger is refused rather than overwritten: it may be somebody's only copy
+     * of something, and this is the only moment at which saying so costs
+     * nothing. */
+    if (kind == RANK_TXT_OTHER) {
+        rank_say("RANK: ERROR NX93.TXT is neither the state file this program");
+        rank_say("RANK: writes nor a ledger an older RANK.EXE left.  Move it");
+        rank_say("RANK: aside or delete it; nothing was changed.");
+        return 1;
     }
-
-    if (!rank_writable(p_txt) || !rank_writable(p_scr)) {
-        if (ftxt != NULL) {
-            fclose(ftxt);
-        }
-        rank_say("RANK: ERROR NX93.SCR or NX93.TXT is read only; nothing changed");
+    migrate = (kind == RANK_TXT_LEGACY) ? 1 : 0;
+    if (migrate && rank_exists(rank_p_retired)) {
+        rank_say("RANK: ERROR NX93OLD.TXT is already there, so the old");
+        rank_say("RANK: NX93.TXT has nowhere to be retired to.  Rename");
+        rank_say("RANK: NX93OLD.TXT and run RANK again; nothing was changed.");
         return 1;
     }
 
-    /* Step one: the backup.  NX93.SCR is not touched until the new ledger
-     * is on disk, so a failure here costs nothing. */
-    fout = fopen(p_tmp_txt, "wb");
-    if (fout == NULL) {
-        if (ftxt != NULL) {
-            fclose(ftxt);
-        }
-        rank_say("RANK: ERROR cannot create RANKTMP.TXT; nothing changed");
+    if (rank_collect(migrate) != 0) {
         return 1;
     }
-    if (rank_ledger_write(fout, ftxt, &now, &cur) != 0) {
-        fclose(fout);
-        (void)remove(p_tmp_txt);
-        if (ftxt != NULL) {
-            fclose(ftxt);
-        }
-        rank_say("RANK: ERROR cannot write NX93.TXT; nothing changed");
-        return 1;
-    }
-    if (fclose(fout) != 0) {
-        (void)remove(p_tmp_txt);
-        if (ftxt != NULL) {
-            fclose(ftxt);
-        }
-        rank_say("RANK: ERROR cannot write NX93.TXT; nothing changed");
-        return 1;
-    }
-    if (ftxt != NULL) {
-        fclose(ftxt);
-        ftxt = NULL;
-    }
-    if (rank_fault(RANK_FAULT_TXT_COMMIT)) {
-        (void)remove(p_tmp_txt);
-        rank_say("RANK: ERROR cannot replace NX93.TXT; nothing changed");
-        return 1;
-    }
-    rc = rank_commit(p_tmp_txt, p_txt, p_old_txt,
-                     rank_fault(RANK_FAULT_TXT_RENAME));
-    if (rc != RANK_COMMIT_OK) {
-        (void)remove(p_tmp_txt);
-        if (rc == RANK_COMMIT_STRANDED) {
-            rank_say("RANK: ERROR NX93.TXT could not be put back.");
-            rank_say("RANK: the old ledger is in RANKOLD.TXT - rename it to");
-            rank_say("RANK: NX93.TXT by hand before running this again.");
-        } else {
-            rank_say("RANK: ERROR cannot replace NX93.TXT; nothing changed");
-        }
+    if (rank_write_all(migrate) != 0) {
         return 1;
     }
 
-    /* Step two: the table itself.  Everything discarded here is already in
-     * NX93.TXT. */
-    rank_rebuild(&cur, &next);
-    fout = fopen(p_tmp_scr, "wb");
-    if (fout == NULL) {
-        rank_say("RANK: ERROR cannot create RANKTMP.SCR; NX93.SCR is unchanged");
-        return 1;
+    fputs("RANK: ", stdout);
+    fputs(rank_mode_word(mode), stdout);
+    fputs(" rule: the ranking has been reset.\n", stdout);
+    rank_say("RANK: what left NX93.SCR is in RANK30.TXT and RANKWHO.TXT.");
+    if (migrate) {
+        rank_say("RANK: the old NX93.TXT was retired to NX93OLD.TXT.");
     }
-    if (rank_write_table(fout, &next) != 0 || rank_fault(RANK_FAULT_SCR_WRITE)) {
-        fclose(fout);
-        (void)remove(p_tmp_scr);
-        rank_say("RANK: ERROR cannot write NX93.SCR; it is unchanged");
-        return 1;
-    }
-    if (fclose(fout) != 0) {
-        (void)remove(p_tmp_scr);
-        rank_say("RANK: ERROR cannot write NX93.SCR; it is unchanged");
-        return 1;
-    }
-    if (rank_fault(RANK_FAULT_SCR_COMMIT)) {
-        (void)remove(p_tmp_scr);
-        rank_say("RANK: ERROR cannot replace NX93.SCR; it is unchanged");
-        return 1;
-    }
-    rc = rank_commit(p_tmp_scr, p_scr, p_old_scr,
-                     rank_fault(RANK_FAULT_SCR_RENAME));
-    if (rc != RANK_COMMIT_OK) {
-        (void)remove(p_tmp_scr);
-        if (rc == RANK_COMMIT_STRANDED) {
-            rank_say("RANK: ERROR NX93.SCR could not be put back.");
-            rank_say("RANK: the old table is in RANKOLD.SCR - rename it to");
-            rank_say("RANK: NX93.SCR by hand, or let the game rebuild it.");
-        } else {
-            rank_say("RANK: ERROR cannot replace NX93.SCR; it is unchanged");
-        }
-        return 1;
-    }
-
-    rank_say("RANK: the ranking has been reset.");
-    rank_say("RANK: the previous table is saved in NX93.TXT.");
     return 0;
 }
 
 #ifndef RANK_NO_MAIN
+/* The usage goes to stdout, where GAME.BAT's PAUSE leaves it on the screen,
+ * and it spells out both switches so that the text says what to type. */
+static void rank_usage(void)
+{
+    rank_say("RANK: usage: RANK [/D | /W]");
+    rank_say("RANK:   /D  reset the ranking when the calendar day changes");
+    rank_say("RANK:   /W  reset it when the week changes (the default)");
+    rank_say("RANK: nothing was changed.");
+}
+
 int main(int argc, char **argv)
 {
     char dir[RANK_PATH_MAX];
+    int mode;
 
-    (void)argc;
+    /* No switch is weekly, which is what the shipped GAME.BAT used to pass.
+     * Anything the parser does not know is refused rather than quietly read as
+     * the default: on a machine whose GAME.BAT says /D, a mistyped switch would
+     * otherwise keep a day's records for a week without a word. */
+    mode = RANK_MODE_WEEKLY;
+    if (argc > 2
+     || (argc == 2 && argv != NULL && rank_mode_parse(argv[1], &mode) != 0)) {
+        rank_usage();
+        return 1;
+    }
     /* Work in the directory RANK.EXE was loaded from, not the current one:
      * DOSSHELL can start it from anywhere, and NX93.SCR must not be created
      * next to whatever that happened to be.  DOS 2.x leaves argv[0] empty,
      * hence the fallback. */
     if (argv != NULL && argv[0] != NULL
      && rank_dir_from_argv0(argv[0], dir, sizeof dir) == 0) {
-        return rank_run(dir);
+        return rank_run(dir, mode);
     }
-    return rank_run((const char *)0);
+    return rank_run((const char *)0, mode);
 }
 #endif

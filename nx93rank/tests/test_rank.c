@@ -51,6 +51,27 @@ typedef char chk_raw[(sizeof(((RankRow *)0)->raw) == RANK_MAX_LINE + 1) ? 1 : -1
 typedef char chk_name[(sizeof(((RankRow *)0)->name) == RANK_NAME_LEN + 1) ? 1 : -1];
 typedef char chk_key[(sizeof(((RankRow *)0)->key) == RANK_NAME_LEN + 1) ? 1 : -1];
 typedef char chk_table[(sizeof(((RankTable *)0)->row) / sizeof(RankRow) == RANK_ROWS * 2) ? 1 : -1];
+typedef char chk_r30_rows[(RANK30_ROWS == 30) ? 1 : -1];
+typedef char chk_who_rows[(RANKWHO_ROWS == 100) ? 1 : -1];
+typedef char chk_mode_weekly[(RANK_MODE_WEEKLY == 0) ? 1 : -1];
+typedef char chk_mode_daily[(RANK_MODE_DAILY == 1) ? 1 : -1];
+typedef char chk_r30_slack[(sizeof(((Rank30Table *)0)->row) / sizeof(RankRow)
+                            == RANK30_ROWS + 1) ? 1 : -1];
+typedef char chk_who_slack[(sizeof(((RankWhoTable *)0)->row) / sizeof(RankRow)
+                            == RANKWHO_ROWS + 1) ? 1 : -1];
+
+/* The two constants the calendar rule retired.  Nothing measures a period in
+ * whole days any more, and nothing writes a JSON array that needs its leading
+ * whitespace buffered, so a build that still defines either of these is one
+ * where part of the old rule survived.  The two functions that went with them
+ * cannot be checked here - absence of a function is not something the
+ * preprocessor can see - and are covered by run-daily.sh's S11 instead. */
+#ifdef RANK_PERIOD_DAYS
+#error "RANK_PERIOD_DAYS outlived the elapsed-days rule"
+#endif
+#ifdef RANK_WS_MAX
+#error "RANK_WS_MAX outlived the ledger writer"
+#endif
 
 #define TPATH 1024
 
@@ -417,261 +438,6 @@ static char *written_bytes(const RankTable *t, size_t *len)
     return read_file(g_io, len);
 }
 
-/* ----------------------------------------------------------------- JSON 覗き
- *
- * Only enough of a reader to state the ledger oracles without pinning the
- * writer's whitespace.  It is string-aware, so a '[' or a key name inside a
- * player name cannot confuse it.
- */
-
-typedef struct {
-    const char *buf;
-    size_t len;
-    size_t pos;
-    int depth;          /* '[' nesting, counted outside strings */
-} Json;
-
-static void json_begin(Json *j, const char *buf, size_t len)
-{
-    j->buf = buf;
-    j->len = len;
-    j->pos = 0;
-    j->depth = 0;
-}
-
-static int hexval(int c)
-{
-    if (c >= '0' && c <= '9') { return c - '0'; }
-    if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
-    if (c >= 'A' && c <= 'F') { return c - 'A' + 10; }
-    return -1;
-}
-
-/* Decode the JSON string starting at buf[p] (the opening quote).  Stores the
- * decoded bytes in out; returns the offset past the closing quote, or 0 on a
- * malformed literal (0 is never a valid answer: p itself is at least 0 and the
- * result is always > p). */
-static size_t json_string(const char *buf, size_t len, size_t p, char *out, size_t cap)
-{
-    size_t o = 0;
-
-    if (p >= len || buf[p] != '"') {
-        return 0;
-    }
-    p++;
-    while (p < len) {
-        unsigned char c = (unsigned char)buf[p];
-        if (c == '"') {
-            if (o >= cap) {
-                return 0;
-            }
-            out[o] = '\0';
-            return p + 1;
-        }
-        if (c == '\\') {
-            int v;
-            p++;
-            if (p >= len) {
-                return 0;
-            }
-            switch (buf[p]) {
-            case '"':  c = '"';  break;
-            case '\\': c = '\\'; break;
-            case '/':  c = '/';  break;
-            case 'b':  c = 0x08; break;
-            case 'f':  c = 0x0c; break;
-            case 'n':  c = 0x0a; break;
-            case 'r':  c = 0x0d; break;
-            case 't':  c = 0x09; break;
-            case 'u':
-                if (p + 4 >= len) {
-                    return 0;
-                }
-                v = 0;
-                {
-                    int k;
-                    for (k = 1; k <= 4; k++) {
-                        int h = hexval((unsigned char)buf[p + k]);
-                        if (h < 0) {
-                            return 0;
-                        }
-                        v = v * 16 + h;
-                    }
-                }
-                if (v > 0xff) {
-                    return 0;   /* the ledger only ever escapes 0x00-0x1f */
-                }
-                c = (unsigned char)v;
-                p += 4;
-                break;
-            default:
-                return 0;
-            }
-        }
-        if (o + 1 >= cap) {
-            return 0;
-        }
-        out[o++] = (char)c;
-        p++;
-    }
-    return 0;
-}
-
-/* Next string token.  Reports the '[' depth at the token and whether a ':'
- * follows it (making it a key).  1 = token, 0 = end, -1 = malformed. */
-static int json_next(Json *j, char *out, size_t cap, int *is_key, int *depth)
-{
-    while (j->pos < j->len) {
-        char c = j->buf[j->pos];
-        if (c == '[') {
-            j->depth++;
-            j->pos++;
-        } else if (c == ']') {
-            j->depth--;
-            j->pos++;
-        } else if (c == '"') {
-            size_t end = json_string(j->buf, j->len, j->pos, out, cap);
-            size_t k;
-            if (end == 0) {
-                return -1;
-            }
-            *depth = j->depth;
-            j->pos = end;
-            k = end;
-            while (k < j->len && (j->buf[k] == ' ' || j->buf[k] == '\t' ||
-                                  j->buf[k] == '\r' || j->buf[k] == '\n')) {
-                k++;
-            }
-            *is_key = (k < j->len && j->buf[k] == ':');
-            return 1;
-        } else {
-            j->pos++;
-        }
-    }
-    return 0;
-}
-
-/* Value of the n-th (0-based) occurrence of a key whose value is a string. */
-static int json_key_string(const char *buf, size_t len, const char *key, int n,
-                           char *out, size_t cap)
-{
-    Json j;
-    char tok[512];
-    int is_key;
-    int depth;
-    int seen = 0;
-    int rc;
-
-    json_begin(&j, buf, len);
-    while ((rc = json_next(&j, tok, sizeof tok, &is_key, &depth)) == 1) {
-        if (is_key && strcmp(tok, key) == 0) {
-            if (seen++ == n) {
-                if (json_next(&j, out, cap, &is_key, &depth) != 1 || is_key) {
-                    return -1;
-                }
-                return 0;
-            }
-        }
-    }
-    return -1;
-}
-
-static int json_count_key(const char *buf, size_t len, const char *key)
-{
-    Json j;
-    char tok[512];
-    int is_key;
-    int depth;
-    int n = 0;
-
-    json_begin(&j, buf, len);
-    while (json_next(&j, tok, sizeof tok, &is_key, &depth) == 1) {
-        if (is_key && strcmp(tok, key) == 0) {
-            n++;
-        }
-    }
-    return n;
-}
-
-/* Elements of the n-th "ranking" array.  Elements sit one bracket deeper than
- * the key token, which is read before its '[' is consumed. */
-static int json_ranking(const char *buf, size_t len, int n,
-                        char rows[][RANK_MAX_LINE + 1], int cap, int *count)
-{
-    Json j;
-    char tok[512];
-    int is_key;
-    int depth;
-    int seen = 0;
-
-    *count = 0;
-    json_begin(&j, buf, len);
-    while (json_next(&j, tok, sizeof tok, &is_key, &depth) == 1) {
-        if (is_key && strcmp(tok, "ranking") == 0) {
-            int want;
-            if (seen++ != n) {
-                continue;
-            }
-            want = depth + 1;
-            for (;;) {
-                size_t save_pos = j.pos;
-                int save_depth = j.depth;
-                if (json_next(&j, tok, sizeof tok, &is_key, &depth) != 1) {
-                    return 0;
-                }
-                if (depth != want || is_key) {
-                    j.pos = save_pos;
-                    j.depth = save_depth;
-                    return 0;
-                }
-                if (*count >= cap || strlen(tok) > RANK_MAX_LINE) {
-                    return -1;
-                }
-                strcpy(rows[*count], tok);
-                (*count)++;
-            }
-        }
-    }
-    return -1;
-}
-
-/* A comma with nothing but whitespace between it and a ']' or '}' (or the
- * mirror image) is the defect U-L4 names.  Counted outside strings only. */
-static int json_stray_comma(const char *buf, size_t len)
-{
-    size_t i = 0;
-
-    while (i < len) {
-        char c = buf[i];
-        if (c == '"') {
-            char sink[512];
-            size_t end = json_string(buf, len, i, sink, sizeof sink);
-            if (end == 0) {
-                return 1;       /* unreadable is not acceptable either */
-            }
-            i = end;
-            continue;
-        }
-        if (c == ',' || c == '[' || c == '{') {
-            size_t k = i + 1;
-            while (k < len && (buf[k] == ' ' || buf[k] == '\t' ||
-                               buf[k] == '\r' || buf[k] == '\n')) {
-                k++;
-            }
-            if (k < len) {
-                if (c == ',' && (buf[k] == ']' || buf[k] == '}')) {
-                    return 1;
-                }
-                if (c != ',' && buf[k] == ',') {
-                    return 1;
-                }
-            }
-        }
-        i++;
-    }
-    return 0;
-}
-
 /* -------------------------------------------------------------- 期待ランキング
  *
  * Derived by hand for the two real inputs, under the rule that a trailing
@@ -693,8 +459,10 @@ static const char *const UM1_WANT[RANK_ROWS] = {
     "040000 13 08 Bio_100% 93/10/01 A"
 };
 
-/* The live nx93.scr as ten rows, which is what a backup taken before the first
- * reset has to contain.  Shared because four cases assert on it. */
+/* The live nx93.scr as ten rows.  None of them is a shipped row and all ten
+ * are already in descending order, so this is also what RANK30.TXT has to hold
+ * after one reset of that table: every row leaving NX93.SCR goes into the
+ * all-time table, which dedupes on whole lines and so folds nothing away. */
 static const char *const SCR_ROWS[RANK_ROWS] = {
     "327400 30 01 OMZN     26/09/15 A",
     "316770 30 02 OMZN     26/09/17 A",
@@ -730,6 +498,13 @@ static const char *const UM2_WANT[RANK_ROWS] = {
     "040000 13 08 Bio_100% 93/10/01 A"
 };
 
+/* One player, which is what the ten rows above come to once a mark on the end
+ * of a name stops identifying anybody: all ten fold to the key OMZN and the
+ * best of them is 327400.  This is RANKWHO.TXT after one reset. */
+static const char *const WHO_WANT[1] = {
+    "327400 30 01 OMZN     26/09/15 A"
+};
+
 /* ------------------------------------------------------------------- S8 契約 */
 
 static void case_contract(void)
@@ -743,6 +518,18 @@ static void case_contract(void)
     EQL("sizeof score == sizeof long", sizeof(((RankRow *)0)->score), sizeof(long));
     EQL("merge buffer holds current + defaults",
         sizeof(((RankTable *)0)->row) / sizeof(RankRow), RANK_ROWS * 2);
+
+    /* The daily reset's own surface. */
+    EQL("RANK30_ROWS", RANK30_ROWS, 30);
+    EQL("RANKWHO_ROWS", RANKWHO_ROWS, 100);
+    EQL("RANK_MODE_WEEKLY", RANK_MODE_WEEKLY, 0);
+    EQL("RANK_MODE_DAILY", RANK_MODE_DAILY, 1);
+    EQL("the all-time table carries one row of slack",
+        sizeof(((Rank30Table *)0)->row) / sizeof(RankRow), RANK30_ROWS + 1);
+    EQL("and so does the per-user table",
+        sizeof(((RankWhoTable *)0)->row) / sizeof(RankRow), RANKWHO_ROWS + 1);
+    EQL("the state file is forty five bytes", RANK_STATE_LEN, 45);
+    EQL("whose timestamp starts at offset twenty", RANK_STATE_TS_AT, 20);
 }
 
 /* --------------------------------------------------------------------- U-T */
@@ -1655,528 +1442,54 @@ static void case_ul2(void)
                 ledger_last_update_text(bad[i], &t), -1);
     }
 }
-
-static const char *const LEDGER_EMPTY =
-    "{\n  \"lastUpdate\": \"2026-09-21T21:40:00\",\n  \"backups\": []\n}\n";
-
-static const char *const LEDGER_ONE =
-    "{\n  \"lastUpdate\": \"2026-09-21T21:40:00\",\n  \"backups\": [\n"
-    "    {\n      \"backupAt\": \"2026-09-21T21:40:00\",\n"
-    "      \"ranking\": [\n"
-    "        \"111111 30 01 OLD      26/09/01 A\"\n"
-    "      ]\n    }\n  ]\n}\n";
-
-/* Run rank_ledger_write over an old ledger held in a file, leaving the result
- * in `newp`.  `old_text` NULL means "no previous ledger at all". */
-static int ledger_write(const char *oldp, const char *old_text, const char *newp,
-                        const RankTime *now, const RankTable *backup)
-{
-    FILE *fo = NULL;
-    FILE *fn;
-    int rc;
-
-    if (old_text != NULL) {
-        write_text(oldp, old_text);
-        fo = fopen(oldp, "rb");
-        if (fo == NULL) {
-            die(oldp);
-        }
-    }
-    fn = fopen(newp, "wb");
-    if (fn == NULL) {
-        die(newp);
-    }
-    rc = rank_ledger_write(fn, fo, now, backup);
-    if (fclose(fn) != 0) {
-        die(newp);
-    }
-    if (fo != NULL && fclose(fo) != 0) {
-        die(oldp);
-    }
-    return rc;
-}
-
-static void backup_table(RankTable *t)
-{
-    static const char *const lines[2] = {
-        "327400 30 01 OMZN     26/09/15 A",
-        "98840 30 01 OMZN@@@@ 63/10/16 A"
-    };
-    table_of(lines, 2, t);
-}
-
-static void case_ul3(void)
-{
-    char oldp[TPATH];
-    char newp[TPATH];
-    RankTime now;
-    RankTable t;
-
-    snprintf(oldp, sizeof oldp, "%s/ul3.old", g_scratch);
-    snprintf(newp, sizeof newp, "%s/ul3.new", g_scratch);
-    backup_table(&t);
-    if (!EQL("now parses", rank_time_parse("2026-09-28T21:40:00", &now), 0)) {
-        return;
-    }
-    EQL("no backups key at all",
-        ledger_write(oldp, "{\"lastUpdate\":\"2026-09-21T21:40:00\"}", newp, &now, &t), -1);
-    EQL("backups is not an array",
-        ledger_write(oldp, "{\"lastUpdate\":\"2026-09-21T21:40:00\",\"backups\":null}",
-                     newp, &now, &t), -1);
-    EQL("truncated right after the key",
-        ledger_write(oldp, "{\"lastUpdate\":\"2026-09-21T21:40:00\",\"backups\"",
-                     newp, &now, &t), -1);
-}
-
-/* Check the shape every successful ledger write must have. */
-static void check_ledger(const char *path, const char *last_update,
-                         int want_backups, const char *const *rows0, int nrows0)
-{
-    char *buf;
-    size_t len;
-    char got[512];
-
-    buf = read_file(path, &len);
-    if (!OK("ledger exists", buf != NULL)) {
-        return;
-    }
-    if (json_key_string(buf, len, "lastUpdate", 0, got, sizeof got) == 0) {
-        EQS("lastUpdate", got, last_update);
-    } else {
-        note(__LINE__, "lastUpdate not readable");
-    }
-    EQL("number of backups", json_count_key(buf, len, "backupAt"), want_backups);
-    EQL("no stray comma next to a bracket", json_stray_comma(buf, len), 0);
-    if (rows0 != NULL) {
-        char rows[RANK_ROWS + 2][RANK_MAX_LINE + 1];
-        int n = -1;
-        if (EQL("backups[0].ranking is readable",
-                json_ranking(buf, len, 0, rows, RANK_ROWS + 2, &n), 0)) {
-            if (EQL("backups[0].ranking length", n, nrows0)) {
-                int i;
-                for (i = 0; i < nrows0; i++) {
-                    eq_str(__LINE__, lbl("backups[0].ranking row", i), rows[i], rows0[i]);
-                }
-            }
-        }
-    }
-    free(buf);
-}
-
-static void case_ul4(void)
-{
-    char oldp[TPATH];
-    char newp[TPATH];
-    RankTime now;
-    RankTable t;
-    static const char *const want[2] = {
-        "327400 30 01 OMZN     26/09/15 A",
-        "98840 30 01 OMZN@@@@ 63/10/16 A"
-    };
-    char *oldbuf;
-    char *newbuf;
-    size_t oldlen;
-    size_t newlen;
-    long at;
-
-    snprintf(oldp, sizeof oldp, "%s/ul4.old", g_scratch);
-    snprintf(newp, sizeof newp, "%s/ul4.new", g_scratch);
-    backup_table(&t);
-    if (!EQL("now parses", rank_time_parse("2026-09-28T21:40:00", &now), 0)) {
-        return;
-    }
-    if (!EQL("write into an empty backups array",
-             ledger_write(oldp, LEDGER_EMPTY, newp, &now, &t), 0)) {
-        return;
-    }
-    check_ledger(newp, "2026-09-28T21:40:00", 1, want, 2);
-
-    /* The bytes from just past the '[' must survive unchanged at the end. */
-    oldbuf = read_file(oldp, &oldlen);
-    newbuf = read_file(newp, &newlen);
-    if (OK("both files readable", oldbuf != NULL && newbuf != NULL)) {
-        const char *br = strchr(oldbuf, '[');
-        if (OK("old ledger has a '['", br != NULL)) {
-            at = (long)(br - oldbuf) + 1L;
-            if (OK("new ledger is at least as long as the kept tail",
-                   (long)newlen >= (long)oldlen - at)) {
-                EQM("old bytes after '[' are preserved as the tail",
-                    newbuf + newlen - (oldlen - (size_t)at), oldlen - (size_t)at,
-                    oldbuf + at, oldlen - (size_t)at);
-            }
-        }
-    }
-    free(oldbuf);
-    free(newbuf);
-}
-
-static void case_ul5(void)
-{
-    char oldp[TPATH];
-    char newp[TPATH];
-    RankTime now;
-    RankTable t;
-    static const char *const want[2] = {
-        "327400 30 01 OMZN     26/09/15 A",
-        "98840 30 01 OMZN@@@@ 63/10/16 A"
-    };
-    char *oldbuf;
-    char *newbuf;
-    size_t oldlen;
-    size_t newlen;
-    char got[512];
-
-    snprintf(oldp, sizeof oldp, "%s/ul5.old", g_scratch);
-    snprintf(newp, sizeof newp, "%s/ul5.new", g_scratch);
-    backup_table(&t);
-    if (!EQL("now parses", rank_time_parse("2026-09-28T21:40:00", &now), 0)) {
-        return;
-    }
-    if (!EQL("prepend to a ledger that already has one entry",
-             ledger_write(oldp, LEDGER_ONE, newp, &now, &t), 0)) {
-        return;
-    }
-    check_ledger(newp, "2026-09-28T21:40:00", 2, want, 2);
-
-    newbuf = read_file(newp, &newlen);
-    oldbuf = read_file(oldp, &oldlen);
-    if (!OK("both files readable", oldbuf != NULL && newbuf != NULL)) {
-        free(oldbuf);
-        free(newbuf);
-        return;
-    }
-    if (json_key_string(newbuf, newlen, "backupAt", 0, got, sizeof got) == 0) {
-        EQS("backups[0] is the new entry", got, "2026-09-28T21:40:00");
-    } else {
-        note(__LINE__, "backups[0].backupAt not readable");
-    }
-    if (json_key_string(newbuf, newlen, "backupAt", 1, got, sizeof got) == 0) {
-        EQS("backups[1] is the old entry", got, "2026-09-21T21:40:00");
-    } else {
-        note(__LINE__, "backups[1].backupAt not readable");
-    }
-    {
-        const char *br = strchr(oldbuf, '[');
-        if (OK("old ledger has a '['", br != NULL)) {
-            size_t at = (size_t)(br - oldbuf) + 1u;
-            if (OK("new ledger is at least as long as the kept tail",
-                   newlen >= oldlen - at)) {
-                EQM("old bytes after '[' are copied through untouched",
-                    newbuf + newlen - (oldlen - at), oldlen - at,
-                    oldbuf + at, oldlen - at);
-            }
-        }
-    }
-    free(oldbuf);
-    free(newbuf);
-}
-
-/* Build a ledger of at least 4000 entries and at least 2 MiB.  A writer that
- * slurps the old file into a buffer cannot survive this on a 64 KB data
- * segment, and on the Mac it shows up as a truncated tail. */
-static void write_huge_ledger(const char *path, int *entries)
-{
-    FILE *fp = fopen(path, "wb");
-    long n = 0;
-    long size;
-
-    if (fp == NULL) {
-        die(path);
-    }
-    fputs("{\n  \"lastUpdate\": \"2026-09-21T21:40:00\",\n  \"backups\": [\n", fp);
-    for (;;) {
-        int i;
-        if (n > 0) {
-            fputs(",\n", fp);
-        }
-        fputs("    {\n      \"backupAt\": \"2020-01-01T00:00:00\",\n"
-              "      \"ranking\": [\n", fp);
-        for (i = 0; i < RANK_ROWS; i++) {
-            fprintf(fp, "        \"%06ld 30 01 OLD%05ld 26/09/01 A\"%s\n",
-                    (long)(100000 + i), n % 100000L, i + 1 < RANK_ROWS ? "," : "");
-        }
-        fputs("      ]\n    }", fp);
-        n++;
-        size = ftell(fp);
-        if (size < 0) {
-            die(path);
-        }
-        if (n >= 4000 && size >= 2L * 1024L * 1024L) {
-            break;
-        }
-    }
-    fputs("\n  ]\n}\n", fp);
-    if (fclose(fp) != 0) {
-        die(path);
-    }
-    *entries = (int)n;
-}
-
-static void case_ul6(void)
-{
-    char oldp[TPATH];
-    char newp[TPATH];
-    RankTime now;
-    RankTable t;
-    int entries = 0;
-    FILE *fo;
-    FILE *fn;
-    int rc;
-    long oldlen;
-    long newlen;
-    long at;
-    char *oldbuf;
-    size_t olen;
-
-    snprintf(oldp, sizeof oldp, "%s/ul6.old", g_scratch);
-    snprintf(newp, sizeof newp, "%s/ul6.new", g_scratch);
-    backup_table(&t);
-    if (!EQL("now parses", rank_time_parse("2026-09-28T21:40:00", &now), 0)) {
-        return;
-    }
-    write_huge_ledger(oldp, &entries);
-    OK("the old ledger really is large", file_size(oldp) >= 2L * 1024L * 1024L);
-    OK("and really has at least 4000 entries", entries >= 4000);
-
-    fo = fopen(oldp, "rb");
-    fn = fopen(newp, "wb");
-    if (fo == NULL || fn == NULL) {
-        die(newp);
-    }
-    rc = rank_ledger_write(fn, fo, &now, &t);
-    if (fclose(fn) != 0 || fclose(fo) != 0) {
-        die(newp);
-    }
-    if (!EQL("a multi-megabyte ledger is written", rc, 0)) {
-        return;
-    }
-    oldlen = file_size(oldp);
-    newlen = file_size(newp);
-    OK("the new ledger grew", newlen > oldlen);
-
-    /* Compare the preserved tail without holding either file whole. */
-    oldbuf = read_file(oldp, &olen);
-    if (!OK("old ledger readable", oldbuf != NULL)) {
-        return;
-    }
-    {
-        const char *br = strchr(oldbuf, '[');
-        if (OK("old ledger has a '['", br != NULL)) {
-            FILE *a = fopen(oldp, "rb");
-            FILE *b = fopen(newp, "rb");
-            long tail;
-            int same = 1;
-            at = (long)(br - oldbuf) + 1L;
-            tail = oldlen - at;
-            if (a == NULL || b == NULL) {
-                die(newp);
-            }
-            if (fseek(a, at, SEEK_SET) != 0 || fseek(b, newlen - tail, SEEK_SET) != 0) {
-                die(newp);
-            }
-            for (;;) {
-                char ba[8192];
-                char bb[8192];
-                size_t na = fread(ba, 1, sizeof ba, a);
-                size_t nb = fread(bb, 1, sizeof bb, b);
-                if (na != nb || (na != 0 && memcmp(ba, bb, na) != 0)) {
-                    same = 0;
-                    break;
-                }
-                if (na == 0) {
-                    break;
-                }
-            }
-            (void)fclose(a);
-            (void)fclose(b);
-            EQL("the whole old tail is copied through byte for byte", same, 1);
-        }
-    }
-    free(oldbuf);
-    /* Do not leave 2 MiB behind for the next case. */
-    (void)unlink(oldp);
-    (void)unlink(newp);
-}
-
-static void case_ul7(void)
-{
-    /* 0x22, 0x5C, 0x1A, 0x07 must be escaped; 0x80 and above must not be,
-     * because a Shift-JIS name carries them and \u escapes would mangle it. */
-    static const char raw[] = "A\"B\\C\032D\007E\340\201F";
-    size_t rawlen = sizeof raw - 1u;
-    FILE *fp;
-    char *out;
-    size_t len;
-    char wrapped[512];
-    char back[512];
-    size_t end;
-    int rc;
-
-    fp = fopen(g_io, "wb");
-    if (fp == NULL) {
-        die(g_io);
-    }
-    rc = rank_json_escape(fp, raw, rawlen);
-    if (fclose(fp) != 0) {
-        die(g_io);
-    }
-    if (!EQL("escape reports success", rc, 0)) {
-        return;
-    }
-    out = read_file(g_io, &len);
-    if (!OK("escaped output readable", out != NULL)) {
-        return;
-    }
-
-    OK("0x22 is escaped", strstr(out, "\\\"") != NULL);
-    OK("0x5C is escaped", strstr(out, "\\\\") != NULL);
-    OK("0x1A becomes a \\u escape",
-       strstr(out, "\\u001a") != NULL || strstr(out, "\\u001A") != NULL);
-    OK("0x07 becomes a \\u escape",
-       strstr(out, "\\u0007") != NULL);
-    OK("0xE0 stays a raw byte", memchr(out, 0xe0, len) != NULL);
-    OK("0x81 stays a raw byte", memchr(out, 0x81, len) != NULL);
-    {
-        size_t i;
-        int ctrl = 0;
-        for (i = 0; i < len; i++) {
-            if ((unsigned char)out[i] < 0x20) {
-                ctrl++;
-            }
-        }
-        EQL("no control byte survives unescaped", ctrl, 0);
-    }
-
-    /* The real invariant: whatever the escaping looks like, decoding it must
-     * give the original bytes back.  Accepts output with or without the
-     * surrounding quotes, since the contract does not say which. */
-    if (out[0] == '"') {
-        end = json_string(out, len, 0, back, sizeof back);
-        if (end != len) {
-            end = 0;
-        }
-    } else {
-        snprintf(wrapped, sizeof wrapped, "\"%s\"", out);
-        end = json_string(wrapped, strlen(wrapped), 0, back, sizeof back);
-    }
-    if (OK("escaped output decodes as a JSON string", end != 0)) {
-        EQM("and decodes back to the original bytes",
-            back, strlen(back), raw, rawlen);
-    }
-    free(out);
-
-    /* The same bytes, but travelling through the ledger writer. */
-    {
-        char oldp[TPATH];
-        char newp[TPATH];
-        RankTime now;
-        RankTable t;
-        char line[64];
-        char rows[RANK_ROWS + 2][RANK_MAX_LINE + 1];
-        char *buf;
-        size_t blen;
-        int n = -1;
-
-        snprintf(oldp, sizeof oldp, "%s/ul7.old", g_scratch);
-        snprintf(newp, sizeof newp, "%s/ul7.new", g_scratch);
-        make_line(line, sizeof line, "327400", "A\"B\\C\007\340\201");
-        memset(&t, 0, sizeof t);
-        if (!EQL("a row with quote and backslash parses",
-                 rank_parse_line(line, &t.row[0]), 0)) {
-            return;
-        }
-        t.count = 1;
-        if (!EQL("now parses", rank_time_parse("2026-09-28T21:40:00", &now), 0)) {
-            return;
-        }
-        if (!EQL("ledger written", ledger_write(oldp, LEDGER_EMPTY, newp, &now, &t), 0)) {
-            return;
-        }
-        buf = read_file(newp, &blen);
-        if (!OK("ledger readable", buf != NULL)) {
-            return;
-        }
-        if (EQL("ranking readable", json_ranking(buf, blen, 0, rows, RANK_ROWS + 2, &n), 0)
-            && EQL("one row backed up", n, 1)) {
-            EQM("the row survives the ledger byte for byte",
-                rows[0], strlen(rows[0]), line, strlen(line));
-        }
-        free(buf);
-    }
-}
-
-static void case_ul8(void)
-{
-    char newp[TPATH];
-    RankTime now;
-    RankTime back;
-    RankTable t;
-
-    snprintf(newp, sizeof newp, "%s/ul8.new", g_scratch);
-    backup_table(&t);
-    if (!EQL("now parses", rank_time_parse("2026-09-28T21:40:00", &now), 0)) {
-        return;
-    }
-    /* No previous ledger: this is the first-run path that I-4 exercises end to
-     * end, reached here through the writer on its own. */
-    if (!EQL("a ledger can be created from nothing",
-             ledger_write(NULL, NULL, newp, &now, &t), 0)) {
-        return;
-    }
-    if (!EQL("what we just wrote reads back", ledger_last_update(newp, &back), 0)) {
-        return;
-    }
-    EQL("year", back.year, now.year);
-    EQL("month", back.month, now.month);
-    EQL("day", back.day, now.day);
-    EQL("hour", back.hour, now.hour);
-    EQL("minute", back.minute, now.minute);
-    EQL("second", back.second, now.second);
-    check_ledger(newp, "2026-09-28T21:40:00", 1, NULL, 0);
-}
-
-/* ----------------------------------------------------------------------- I */
+/* ----------------------------------------------------------------------- I
+ *
+ * Thirteen names a run may open: the five that outlive it, the four
+ * temporaries and the four copies the commit step parks the outgoing file in.
+ */
 
 typedef struct {
     char dir[TPATH];
-    char scr[TPATH];
-    char txt[TPATH];
+    char scr[TPATH];        /* NX93.SCR    */
+    char txt[TPATH];        /* NX93.TXT    */
+    char r30[TPATH];        /* RANK30.TXT  */
+    char who[TPATH];        /* RANKWHO.TXT */
+    char retired[TPATH];    /* NX93OLD.TXT */
     char tmpscr[TPATH];
     char tmptxt[TPATH];
-    char oldscr[TPATH];   /* the commit step moves the outgoing file aside here */
+    char tmp30[TPATH];
+    char tmpwho[TPATH];
+    char oldscr[TPATH];
     char oldtxt[TPATH];
+    char old30[TPATH];
+    char oldwho[TPATH];
 } Env;
 
 static void env_make(Env *e, const char *tag)
 {
     case_dir(tag, e->dir);
-    snprintf(e->scr, sizeof e->scr, "%s/NX93.SCR", e->dir);
-    snprintf(e->txt, sizeof e->txt, "%s/NX93.TXT", e->dir);
-    snprintf(e->tmpscr, sizeof e->tmpscr, "%s/RANKTMP.SCR", e->dir);
-    snprintf(e->tmptxt, sizeof e->tmptxt, "%s/RANKTMP.TXT", e->dir);
-    snprintf(e->oldscr, sizeof e->oldscr, "%s/RANKOLD.SCR", e->dir);
-    snprintf(e->oldtxt, sizeof e->oldtxt, "%s/RANKOLD.TXT", e->dir);
+    snprintf(e->scr,     sizeof e->scr,     "%s/NX93.SCR",    e->dir);
+    snprintf(e->txt,     sizeof e->txt,     "%s/NX93.TXT",    e->dir);
+    snprintf(e->r30,     sizeof e->r30,     "%s/RANK30.TXT",  e->dir);
+    snprintf(e->who,     sizeof e->who,     "%s/RANKWHO.TXT", e->dir);
+    snprintf(e->retired, sizeof e->retired, "%s/NX93OLD.TXT", e->dir);
+    snprintf(e->tmpscr,  sizeof e->tmpscr,  "%s/RANKTMP.SCR", e->dir);
+    snprintf(e->tmptxt,  sizeof e->tmptxt,  "%s/RANKTMP.TXT", e->dir);
+    snprintf(e->tmp30,   sizeof e->tmp30,   "%s/RANKTMP.30",  e->dir);
+    snprintf(e->tmpwho,  sizeof e->tmpwho,  "%s/RANKTMP.WHO", e->dir);
+    snprintf(e->oldscr,  sizeof e->oldscr,  "%s/RANKOLD.SCR", e->dir);
+    snprintf(e->oldtxt,  sizeof e->oldtxt,  "%s/RANKOLD.TXT", e->dir);
+    snprintf(e->old30,   sizeof e->old30,   "%s/RANKOLD.30",  e->dir);
+    snprintf(e->oldwho,  sizeof e->oldwho,  "%s/RANKOLD.WHO", e->dir);
 }
 
-static void env_ledger(const Env *e, const char *last_update)
+/* The state file, written by hand so that no case depends on the writer it is
+ * there to check.  Forty five bytes, of which nineteen are the instant of the
+ * last reset. */
+static void env_state(const Env *e, const char *last_update)
 {
-    char buf[512];
-    snprintf(buf, sizeof buf, "{\n  \"lastUpdate\": \"%s\",\n  \"backups\": []\n}\n", last_update);
-    write_text(e->txt, buf);
-}
-
-/* A ledger that already carries one backup, so a further one has something to
- * be prepended to and the entry count is a meaningful assertion. */
-static void env_ledger_one(const Env *e, const char *last_update, const char *backup_at)
-{
-    char buf[1024];
-    snprintf(buf, sizeof buf,
-             "{\n  \"lastUpdate\": \"%s\",\n  \"backups\": [\n"
-             "    {\n      \"backupAt\": \"%s\",\n"
-             "      \"ranking\": [\n"
-             "        \"111111 30 01 OLD      26/09/01 A\"\n"
-             "      ]\n    }\n  ]\n}\n",
-             last_update, backup_at);
+    char buf[80];
+    snprintf(buf, sizeof buf, "{\r\n  \"lastUpdate\": \"%s\"\r\n}\r\n", last_update);
     write_text(e->txt, buf);
 }
 
@@ -2190,16 +1503,23 @@ static void set_clock(const char *s)
     rank_test_now = t;
 }
 
+/* The five files a run may legitimately leave behind. */
 static void env_snapshot(const Env *e)
 {
     snap(e->scr, "scr");
     snap(e->txt, "txt");
+    snap(e->r30, "r30");
+    snap(e->who, "who");
+    snap(e->retired, "retired");
 }
 
 static void expect_unchanged(const Env *e)
 {
-    OK("NX93.SCR is byte for byte what it was", snap_same(e->scr, "scr"));
-    OK("NX93.TXT is byte for byte what it was", snap_same(e->txt, "txt"));
+    OK("NX93.SCR is byte for byte what it was",    snap_same(e->scr, "scr"));
+    OK("NX93.TXT is byte for byte what it was",    snap_same(e->txt, "txt"));
+    OK("RANK30.TXT is byte for byte what it was",  snap_same(e->r30, "r30"));
+    OK("RANKWHO.TXT is byte for byte what it was", snap_same(e->who, "who"));
+    OK("NX93OLD.TXT is byte for byte what it was", snap_same(e->retired, "retired"));
 }
 
 /* Nothing of the implementation's own making may outlive a run, on any path.
@@ -2207,18 +1527,25 @@ static void expect_unchanged(const Env *e)
  * there is as much a defect as a leftover RANKTMP.*: the run before it did not
  * finish tidying up.  (The one deliberate exception is a stranded commit, where
  * RANKOLD.* is the only surviving copy and the program says so; no case here
- * provokes that, because it needs the rename back to fail too.) */
+ * provokes that, because it needs the rename back to fail too - test_daily.c's
+ * I-43 and I-53 do, with an injection point of their own.) */
 static void expect_no_temps(const Env *e)
 {
     OK("RANKTMP.SCR was cleaned up", !file_exists(e->tmpscr));
     OK("RANKTMP.TXT was cleaned up", !file_exists(e->tmptxt));
+    OK("RANKTMP.30 was cleaned up",  !file_exists(e->tmp30));
+    OK("RANKTMP.WHO was cleaned up", !file_exists(e->tmpwho));
     OK("RANKOLD.SCR was cleaned up", !file_exists(e->oldscr));
     OK("RANKOLD.TXT was cleaned up", !file_exists(e->oldtxt));
+    OK("RANKOLD.30 was cleaned up",  !file_exists(e->old30));
+    OK("RANKOLD.WHO was cleaned up", !file_exists(e->oldwho));
 }
 
-static void expect_scr(const Env *e, const char *const *want, int n)
+/* A file of rows: each line verbatim plus CR LF, no trailing 0x1A. */
+static void expect_rows(const char *path, const char *const *want, int n,
+                        const char *what)
 {
-    char buf[1024];
+    char buf[2048];
     size_t at = 0;
     char *got;
     size_t len;
@@ -2231,105 +1558,152 @@ static void expect_scr(const Env *e, const char *const *want, int n)
         buf[at++] = '\r';
         buf[at++] = '\n';
     }
-    got = read_file(e->scr, &len);
-    if (!OK("NX93.SCR exists", got != NULL)) {
+    got = read_file(path, &len);
+    if (got == NULL) {
+        note(__LINE__, what);
         return;
     }
-    EQM("NX93.SCR holds the rebuilt table", got, len, buf, at);
+    eq_mem(__LINE__, what, got, len, buf, at);
     free(got);
 }
 
+static void expect_scr(const Env *e, const char *const *want, int n)
+{
+    expect_rows(e->scr, want, n, "NX93.SCR holds the rebuilt table");
+}
+
+/* The canonical state file, spelled out here rather than taken from the writer
+ * it is checking: forty five bytes, nineteen of which are the instant. */
+static void expect_state(const char *path, const char *ts, const char *what)
+{
+    char want[80];
+    char *got;
+    size_t len;
+
+    snprintf(want, sizeof want, "{\r\n  \"lastUpdate\": \"%s\"\r\n}\r\n", ts);
+    got = read_file(path, &len);
+    if (got == NULL) {
+        note(__LINE__, what);
+        return;
+    }
+    eq_mem(__LINE__, what, got, len, want, strlen(want));
+    free(got);
+}
+
+/* The four files a reset of the live table produces, asserted together: the
+ * two records files first, because the point of the order is that nothing
+ * leaves NX93.SCR before it has arrived in them. */
+static void expect_reset(const Env *e, const char *ts)
+{
+    expect_rows(e->r30, SCR_ROWS, RANK_ROWS, "RANK30.TXT holds all ten records");
+    expect_rows(e->who, WHO_WANT, 1, "RANKWHO.TXT holds the one player");
+    expect_scr(e, UM1_WANT, RANK_ROWS);
+    expect_state(e->txt, ts, "NX93.TXT holds the instant of this reset");
+}
+
+/* The calendar anchors every integration case below is built on.  2026-09-21
+ * and 2026-09-28 are Mondays, so the Sunday between them closes the first
+ * one's week; that pair is where the weekly rule says "no" and the day after
+ * says "yes", with no reference to how many days have gone by. */
+#define R_PREVWK "2026-09-14T00:00:00"   /* a Monday, two weeks back */
+#define R_LAST   "2026-09-21T00:00:00"   /* a Monday */
+#define R_MIDWK  "2026-09-24T09:00:00"   /* the Thursday of its week */
+#define R_SAMEWK "2026-09-27T23:59:59"   /* the Sunday that closes it */
+#define R_NEXTWK "2026-09-28T21:40:00"   /* the next Monday: the rule crosses */
+
+/* Inside one week nothing happens, however near the boundary the clock gets.
+ * The second instant is one second short of the Monday, which under the rule
+ * this replaced - seven whole days - was also "not yet", and under the new one
+ * is "not yet" for an entirely different reason. */
 static void case_i1(void)
 {
-    static const char *const when[2] = {
-        "2026-09-27T21:40:00",      /* six days */
-        "2026-09-28T21:39:59"       /* one second short of seven */
-    };
+    static const char *const when[2] = { R_MIDWK, R_SAMEWK };
     int i;
 
     for (i = 0; i < 2; i++) {
         Env e;
         env_make(&e, lbl("i1", i));
         write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-        env_ledger(&e, "2026-09-21T21:40:00");
+        env_state(&e, R_LAST);
         env_snapshot(&e);
         set_clock(when[i]);
 
-        eq_long(__LINE__, lbl("under seven days does nothing, and says so", i),
-                rank_run(e.dir), 0);
+        eq_long(__LINE__, lbl("a run inside one week does nothing", i),
+                rank_run(e.dir, RANK_MODE_WEEKLY), 0);
         expect_unchanged(&e);
         expect_no_temps(&e);
     }
 }
 
+/* The Monday itself.  Six days and twenty three hours separate these two
+ * instants, which the retired rule would have called "not yet". */
 static void case_i2(void)
 {
     Env e;
-    char *buf;
-    size_t len;
 
     env_make(&e, "i2");
     write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-    env_ledger(&e, "2026-09-21T21:40:00");
-    set_clock("2026-09-28T21:40:00");
+    env_state(&e, R_LAST);
+    set_clock(R_NEXTWK);
 
-    EQL("exactly seven days resets", rank_run(e.dir), 0);
-    expect_scr(&e, UM1_WANT, RANK_ROWS);
+    EQL("crossing a Monday resets", rank_run(e.dir, RANK_MODE_WEEKLY), 0);
+    expect_reset(&e, R_NEXTWK);
+    OK("no ledger was retired, because there was none", !file_exists(e.retired));
     expect_no_temps(&e);
-
-    buf = read_file(e.txt, &len);
-    if (OK("ledger exists", buf != NULL)) {
-        EQL("the empty backups array gained exactly one entry",
-            json_count_key(buf, len, "backupAt"), 1);
-        EQL("no stray comma", json_stray_comma(buf, len), 0);
-        free(buf);
-    }
-    /* The whole live table must be recoverable from the backup. */
-    check_ledger(e.txt, "2026-09-28T21:40:00", 1, SCR_ROWS, RANK_ROWS);
 }
 
+/* Two Mondays in the gap, and still exactly one reset. */
 static void case_i3(void)
 {
     Env e;
+
     env_make(&e, "i3");
     write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-    env_ledger(&e, "2026-09-20T21:40:00");
-    set_clock("2026-09-28T21:40:00");
+    env_state(&e, R_PREVWK);
+    set_clock(R_NEXTWK);
 
-    EQL("eight days resets", rank_run(e.dir), 0);
-    expect_scr(&e, UM1_WANT, RANK_ROWS);
+    EQL("two boundaries in the gap still reset once",
+        rank_run(e.dir, RANK_MODE_WEEKLY), 0);
+    expect_reset(&e, R_NEXTWK);
+    env_snapshot(&e);
+    EQL("and the next run has nothing left to do",
+        rank_run(e.dir, RANK_MODE_WEEKLY), 0);
+    expect_unchanged(&e);
     expect_no_temps(&e);
-    check_ledger(e.txt, "2026-09-28T21:40:00", 1, NULL, 0);
 }
 
-/* No NX93.TXT at all means "no last update, so at least a week ago".  The
- * backup is taken first, so the current table is never lost to this path. */
+/* No NX93.TXT at all means nothing records a reset, so this run is the first
+ * one.  The two tables are written before NX93.SCR is touched, so the records
+ * are never lost to this path. */
 static void case_i4(void)
 {
     Env e;
 
     env_make(&e, "i4");
     write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-    set_clock("2026-09-28T21:40:00");
+    set_clock(R_NEXTWK);
 
-    EQL("a missing ledger resets on the spot", rank_run(e.dir), 0);
+    EQL("a missing state file resets on the spot",
+        rank_run(e.dir, RANK_MODE_WEEKLY), 0);
     OK("NX93.TXT was created", file_exists(e.txt));
-    expect_scr(&e, UM1_WANT, RANK_ROWS);
+    expect_reset(&e, R_NEXTWK);
     expect_no_temps(&e);
-    check_ledger(e.txt, "2026-09-28T21:40:00", 1, SCR_ROWS, RANK_ROWS);
 }
 
-/* A ledger we cannot read is not a licence to overwrite it.  Fail closed. */
+/* An NX93.TXT we cannot make sense of is not a licence to overwrite it.  Fail
+ * closed: the first four cannot even be read, the fifth is readable but is
+ * neither this program's state file nor an old ledger, and the sixth carries
+ * the backups key and then breaks the grammar behind it. */
 static void case_i5(void)
 {
     static const char *const bad[] = {
-        "{\"backups\":[]}",
+        "{\"backups\":[]}",                                 /* no lastUpdate */
         "{\"lastUpdate\":\"2026-09-2xT21:40:00\",\"backups\":[]}",
         "{\"lastUpdate\":\"2026-09-28T21:40:0\",\"backups\":[]}",
-        "{\"lastUpdate\":\"2026-09-21T21:40:00\"}",
-        "{\"lastUpdate\":\"2026-09-21T21:40:00\",\"backups\":null}",
         "",
-        "not json at all"
+        "not json at all",
+        "{\"lastUpdate\":\"" R_LAST "\"}",
+        "{\"lastUpdate\":\"" R_LAST "\",\"backups\":null}"
     };
     size_t i;
 
@@ -2339,18 +1713,21 @@ static void case_i5(void)
         write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
         write_text(e.txt, bad[i]);
         env_snapshot(&e);
-        set_clock("2026-09-28T21:40:00");
+        set_clock(R_NEXTWK);
 
-        eq_long(__LINE__, lbl("a corrupt ledger fails without writing", (long)i),
-                rank_run(e.dir), 1);
+        eq_long(__LINE__, lbl("an unusable state file fails without writing",
+                              (long)i),
+                rank_run(e.dir, RANK_MODE_WEEKLY), 1);
         expect_unchanged(&e);
+        OK(lbl("no all-time table was created", (long)i), !file_exists(e.r30));
+        OK(lbl("no per-user table either", (long)i), !file_exists(e.who));
         expect_no_temps(&e);
     }
 }
 
-/* The backup has to be on disk before NX93.SCR is touched.  Break the SCR
- * write and the backup must still be there, or a crash at that moment loses
- * the table for good. */
+/* The two records files have to be on disk before NX93.SCR is touched.  Break
+ * the NX93.SCR write and the rows it is about to lose must already be in them,
+ * or a crash at that moment loses them for good. */
 static void case_i6(void)
 {
     static const RankFault faults[2] = { RANK_FAULT_SCR_WRITE, RANK_FAULT_SCR_COMMIT };
@@ -2360,58 +1737,78 @@ static void case_i6(void)
         Env e;
         env_make(&e, lbl("i6", i));
         write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-        env_ledger(&e, "2026-09-21T21:40:00");
+        env_state(&e, R_LAST);
         snap(e.scr, "scr");
-        set_clock("2026-09-28T21:40:00");
+        snap(e.txt, "txt");
+        set_clock(R_NEXTWK);
 
         rank_test_fault = faults[i];
-        eq_long(__LINE__, lbl("a failed SCR write is reported", i), rank_run(e.dir), 1);
+        eq_long(__LINE__, lbl("a failed NX93.SCR write is reported", i),
+                rank_run(e.dir, RANK_MODE_WEEKLY), 1);
         rank_test_fault = RANK_FAULT_NONE;
 
         OK(lbl("NX93.SCR is untouched", i), snap_same(e.scr, "scr"));
+        OK(lbl("and so is NX93.TXT, the stage after it", i),
+           snap_same(e.txt, "txt"));
+        expect_rows(e.r30, SCR_ROWS, RANK_ROWS,
+                    "RANK30.TXT already holds every record");
+        expect_rows(e.who, WHO_WANT, 1, "and RANKWHO.TXT the one player");
         expect_no_temps(&e);
-        check_ledger(e.txt, "2026-09-28T21:40:00", 1, SCR_ROWS, RANK_ROWS);
     }
 }
 
-/* The mirror image: if the ledger cannot be written, nothing at all happens. */
+/* The mirror image, with the order the other way round from the program this
+ * replaced: NX93.TXT is the last file written, so a failure there leaves the
+ * other three new and the reset simply happens again next time.  Recording the
+ * reset first would be the unrecoverable order - a run that then failed to
+ * rewrite NX93.SCR would never reset again. */
 static void case_i7(void)
 {
-    static const RankFault faults[2] = { RANK_FAULT_LEDGER_WRITE, RANK_FAULT_LEDGER_COMMIT };
+    static const RankFault faults[2] = { RANK_FAULT_TXT_WRITE, RANK_FAULT_TXT_COMMIT };
     int i;
 
     for (i = 0; i < 2; i++) {
         Env e;
         env_make(&e, lbl("i7", i));
         write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-        env_ledger(&e, "2026-09-21T21:40:00");
-        env_snapshot(&e);
-        set_clock("2026-09-28T21:40:00");
+        env_state(&e, R_LAST);
+        snap(e.txt, "txt");
+        set_clock(R_NEXTWK);
 
         rank_test_fault = faults[i];
-        eq_long(__LINE__, lbl("a failed ledger write is reported", i), rank_run(e.dir), 1);
+        eq_long(__LINE__, lbl("a failed state write is reported", i),
+                rank_run(e.dir, RANK_MODE_WEEKLY), 1);
         rank_test_fault = RANK_FAULT_NONE;
 
-        expect_unchanged(&e);
+        OK(lbl("NX93.TXT still holds the old instant", i),
+           snap_same(e.txt, "txt"));
+        expect_rows(e.r30, SCR_ROWS, RANK_ROWS, "RANK30.TXT is new");
+        expect_rows(e.who, WHO_WANT, 1, "RANKWHO.TXT is new");
+        expect_scr(&e, UM1_WANT, RANK_ROWS);
+        expect_no_temps(&e);
+
+        eq_long(__LINE__, lbl("and the retry finishes the job", i),
+                rank_run(e.dir, RANK_MODE_WEEKLY), 0);
+        expect_reset(&e, R_NEXTWK);
         expect_no_temps(&e);
     }
 }
 
 /* A fresh install has no NX93.SCR.  That is zero rows, not an error, so the
- * run repairs it with the defaults. */
+ * run repairs it with the defaults - and the two tables are created empty
+ * rather than left absent, because nothing left NX93.SCR to put in them. */
 static void case_i8(void)
 {
     Env e;
-    char rows[RANK_ROWS + 2][RANK_MAX_LINE + 1];
     char *buf;
     size_t len;
-    int n = -1;
 
     env_make(&e, "i8");
-    env_ledger(&e, "2026-09-21T21:40:00");
-    set_clock("2026-09-28T21:40:00");
+    env_state(&e, R_LAST);
+    set_clock(R_NEXTWK);
 
-    EQL("a missing NX93.SCR is not an error", rank_run(e.dir), 0);
+    EQL("a missing NX93.SCR is not an error",
+        rank_run(e.dir, RANK_MODE_WEEKLY), 0);
     expect_no_temps(&e);
 
     buf = read_file(e.scr, &len);
@@ -2419,133 +1816,11 @@ static void case_i8(void)
         EQM("and it is the distribution table", buf, len, fix_def, FIX_DEF_LEN);
         free(buf);
     }
-    buf = read_file(e.txt, &len);
-    if (OK("ledger readable", buf != NULL)) {
-        EQL("one backup was taken", json_count_key(buf, len, "backupAt"), 1);
-        if (EQL("ranking readable", json_ranking(buf, len, 0, rows, RANK_ROWS + 2, &n), 0)) {
-            EQL("with nothing in it, because there was nothing to back up", n, 0);
-        }
-        EQL("no stray comma", json_stray_comma(buf, len), 0);
-        free(buf);
-    }
-}
-
-/* Two resets a week apart.  backups[0] must be the newer one. */
-static void case_i9(void)
-{
-    Env e;
-    char *buf;
-    size_t len;
-    char got[512];
-    char rows[RANK_ROWS + 2][RANK_MAX_LINE + 1];
-    int n = -1;
-    int i;
-
-    env_make(&e, "i9");
-    write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-    set_clock("2026-09-21T21:40:00");
-    EQL("first run resets", rank_run(e.dir), 0);
-
-    set_clock("2026-09-28T21:40:00");
-    EQL("second run resets a week later", rank_run(e.dir), 0);
-    expect_no_temps(&e);
-
-    buf = read_file(e.txt, &len);
-    if (!OK("ledger readable", buf != NULL)) {
-        return;
-    }
-    EQL("two backups now", json_count_key(buf, len, "backupAt"), 2);
-    EQL("no stray comma", json_stray_comma(buf, len), 0);
-
-    if (json_key_string(buf, len, "backupAt", 0, got, sizeof got) == 0) {
-        EQS("backups[0] is the newer run", got, "2026-09-28T21:40:00");
-    } else {
-        note(__LINE__, "backups[0].backupAt not readable");
-    }
-    if (json_key_string(buf, len, "backupAt", 1, got, sizeof got) == 0) {
-        EQS("backups[1] is the older run", got, "2026-09-21T21:40:00");
-    } else {
-        note(__LINE__, "backups[1].backupAt not readable");
-    }
-    if (EQL("backups[0].ranking readable",
-            json_ranking(buf, len, 0, rows, RANK_ROWS + 2, &n), 0)
-        && EQL("backups[0].ranking length", n, RANK_ROWS)) {
-        for (i = 0; i < RANK_ROWS; i++) {
-            /* What the first run wrote is what the second run backed up. */
-            eq_str(__LINE__, lbl("backups[0] row", i), rows[i], UM1_WANT[i]);
-        }
-    }
-    if (EQL("backups[1].ranking readable",
-            json_ranking(buf, len, 1, rows, RANK_ROWS + 2, &n), 0)
-        && EQL("backups[1].ranking length", n, RANK_ROWS)) {
-        for (i = 0; i < RANK_ROWS; i++) {
-            eq_str(__LINE__, lbl("backups[1] row", i), rows[i], SCR_ROWS[i]);
-        }
-    }
-    free(buf);
-}
-
-static void case_i10(void)
-{
-    Env e;
-    char keep[TPATH];
-    int entries = 0;
-    long oldlen;
-    long newlen;
-    char *oldbuf;
-    size_t olen;
-
-    env_make(&e, "i10");
-    write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-    write_huge_ledger(e.txt, &entries);
-    snprintf(keep, sizeof keep, "%s/i10.keep", g_scratch);
-    copy_file(e.txt, keep);
-    oldlen = file_size(e.txt);
-    set_clock("2026-09-28T21:40:00");
-
-    EQL("a two megabyte ledger does not stop the reset", rank_run(e.dir), 0);
-    expect_scr(&e, UM1_WANT, RANK_ROWS);
-    expect_no_temps(&e);
-
-    newlen = file_size(e.txt);
-    OK("the ledger grew rather than being replaced", newlen > oldlen);
-
-    oldbuf = read_file(keep, &olen);
-    if (OK("kept copy readable", oldbuf != NULL)) {
-        const char *br = strchr(oldbuf, '[');
-        if (OK("old ledger has a '['", br != NULL)) {
-            long at = (long)(br - oldbuf) + 1L;
-            long tail = oldlen - at;
-            FILE *a = fopen(keep, "rb");
-            FILE *b = fopen(e.txt, "rb");
-            int same = 1;
-            if (a == NULL || b == NULL) {
-                die(e.txt);
-            }
-            if (fseek(a, at, SEEK_SET) != 0 || fseek(b, newlen - tail, SEEK_SET) != 0) {
-                die(e.txt);
-            }
-            for (;;) {
-                char ba[8192];
-                char bb[8192];
-                size_t na = fread(ba, 1, sizeof ba, a);
-                size_t nb = fread(bb, 1, sizeof bb, b);
-                if (na != nb || (na != 0 && memcmp(ba, bb, na) != 0)) {
-                    same = 0;
-                    break;
-                }
-                if (na == 0) {
-                    break;
-                }
-            }
-            (void)fclose(a);
-            (void)fclose(b);
-            EQL("every old entry is still there, unchanged", same, 1);
-        }
-    }
-    free(oldbuf);
-    (void)unlink(keep);
-    rm_tree(e.dir);
+    OK("RANK30.TXT exists", file_exists(e.r30));
+    EQL("and is empty rather than absent", file_size(e.r30), 0L);
+    OK("RANKWHO.TXT exists", file_exists(e.who));
+    EQL("and is empty rather than absent", file_size(e.who), 0L);
+    expect_state(e.txt, R_NEXTWK, "NX93.TXT holds the instant of the reset");
 }
 
 static void case_i11(void)
@@ -2555,14 +1830,13 @@ static void case_i11(void)
 
     env_make(&e, "i11");
     write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-    env_ledger(&e, "2026-09-21T21:40:00");
+    env_state(&e, R_LAST);
     env_snapshot(&e);
-    set_clock("2026-09-25T09:00:00");
+    set_clock(R_MIDWK);
 
     for (i = 0; i < 5; i++) {
-        eq_long(__LINE__, lbl("run", i), rank_run(e.dir), 0);
-        OK(lbl("NX93.SCR still untouched", i), snap_same(e.scr, "scr"));
-        OK(lbl("NX93.TXT still untouched", i), snap_same(e.txt, "txt"));
+        eq_long(__LINE__, lbl("run", i), rank_run(e.dir, RANK_MODE_WEEKLY), 0);
+        expect_unchanged(&e);
     }
     expect_no_temps(&e);
 }
@@ -2575,20 +1849,21 @@ static void case_i12(void)
 
     env_make(&e, "i12");
     write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-    env_ledger(&e, "2026-09-21T21:40:00");
-    set_clock("2026-09-28T21:40:00");
+    env_state(&e, R_LAST);
+    set_clock(R_NEXTWK);
 
-    EQL("the reset runs", rank_run(e.dir), 0);
-    expect_scr(&e, UM1_WANT, RANK_ROWS);
+    EQL("the reset runs", rank_run(e.dir, RANK_MODE_WEEKLY), 0);
+    expect_reset(&e, R_NEXTWK);
     env_snapshot(&e);
 
-    EQL("running again at the same instant does nothing", rank_run(e.dir), 0);
+    EQL("running again at the same instant does nothing",
+        rank_run(e.dir, RANK_MODE_WEEKLY), 0);
     expect_unchanged(&e);
     expect_no_temps(&e);
 }
 
 /* A directory we cannot write is the honest "write is impossible" case: the
- * temporary file cannot even be created. */
+ * first temporary file cannot even be created. */
 static void case_i13a(void)
 {
     Env e;
@@ -2596,14 +1871,14 @@ static void case_i13a(void)
 
     env_make(&e, "i13a");
     write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-    env_ledger(&e, "2026-09-21T21:40:00");
+    env_state(&e, R_LAST);
     env_snapshot(&e);
-    set_clock("2026-09-28T21:40:00");
+    set_clock(R_NEXTWK);
 
     if (chmod(e.dir, 0555) != 0) {
         die(e.dir);
     }
-    rc = rank_run(e.dir);
+    rc = rank_run(e.dir, RANK_MODE_WEEKLY);
     if (chmod(e.dir, 0755) != 0) {
         die(e.dir);
     }
@@ -2613,7 +1888,7 @@ static void case_i13a(void)
     expect_no_temps(&e);
 }
 
-/* A read-only NX93.SCR in a writable directory is NOT a write barrier on
+/* A read-only NX93.SCR in a writable directory is not a write barrier on
  * POSIX: rename(2) replaces it regardless of its mode, and MS-DOS behaves the
  * same way once the file is deleted first.  So the oracle here is the
  * all-or-nothing one, not "must fail".  See the note in README.md. */
@@ -2624,21 +1899,20 @@ static void case_i13b(void)
 
     env_make(&e, "i13b");
     write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-    env_ledger(&e, "2026-09-21T21:40:00");
+    env_state(&e, R_LAST);
     env_snapshot(&e);
-    set_clock("2026-09-28T21:40:00");
+    set_clock(R_NEXTWK);
 
     if (chmod(e.scr, 0444) != 0) {
         die(e.scr);
     }
-    rc = rank_run(e.dir);
+    rc = rank_run(e.dir, RANK_MODE_WEEKLY);
     (void)chmod(e.scr, 0644);
 
     if (rc == 1) {
         expect_unchanged(&e);
     } else if (EQL("the run either failed or succeeded, nothing else", rc, 0)) {
-        expect_scr(&e, UM1_WANT, RANK_ROWS);
-        check_ledger(e.txt, "2026-09-28T21:40:00", 1, NULL, 0);
+        expect_reset(&e, R_NEXTWK);
     }
     expect_no_temps(&e);
 }
@@ -2652,9 +1926,9 @@ static void case_i14(void)
         dir[i] = 'x';
     }
     dir[RANK_PATH_MAX + 120] = '\0';
-    set_clock("2026-09-28T21:40:00");
+    set_clock(R_NEXTWK);
     EQL("a directory name that cannot fit the path buffer is refused",
-        rank_run(dir), 1);
+        rank_run(dir, RANK_MODE_WEEKLY), 1);
 }
 
 /* D5: more rows than the game keeps is a signal that something else wrote the
@@ -2668,12 +1942,14 @@ static void case_i15(void)
     memcpy(buf, fix_scr, FIX_SCR_LEN);
     memcpy(buf + FIX_SCR_LEN, "060000 16 07 Bio_100% 93/10/01 A\r\n", 34);
     write_bytes(e.scr, buf, FIX_SCR_LEN + 34u);
-    env_ledger(&e, "2026-09-21T21:40:00");
+    env_state(&e, R_LAST);
     env_snapshot(&e);
-    set_clock("2026-09-28T21:40:00");
+    set_clock(R_NEXTWK);
 
-    EQL("eleven rows stop the run", rank_run(e.dir), 1);
+    EQL("eleven rows stop the run", rank_run(e.dir, RANK_MODE_WEEKLY), 1);
     expect_unchanged(&e);
+    OK("no all-time table was created", !file_exists(e.r30));
+    OK("no per-user table either", !file_exists(e.who));
     expect_no_temps(&e);
 }
 
@@ -2701,18 +1977,21 @@ static void case_i16(void)
         buf[at++] = '\r';
         buf[at++] = '\n';
         write_bytes(e.scr, buf, at);
-        env_ledger(&e, "2026-09-21T21:40:00");
+        env_state(&e, R_LAST);
         env_snapshot(&e);
-        set_clock("2026-09-28T21:40:00");
+        set_clock(R_NEXTWK);
 
         eq_long(__LINE__, lbl("an unreadable row stops the run", (long)i),
-                rank_run(e.dir), 1);
+                rank_run(e.dir, RANK_MODE_WEEKLY), 1);
         expect_unchanged(&e);
+        OK(lbl("no all-time table was created", (long)i), !file_exists(e.r30));
+        OK(lbl("no per-user table either", (long)i), !file_exists(e.who));
         expect_no_temps(&e);
     }
 }
 
-/* The DOS main calls rank_run(NULL): the 98 side never builds a path. */
+/* The DOS main calls rank_run with no directory at all when DOS 2.x leaves
+ * argv[0] empty: the 98 side never builds a path. */
 static void case_i17(void)
 {
     Env e;
@@ -2725,18 +2004,18 @@ static void case_i17(void)
     for (i = 0; i < 2; i++) {
         env_make(&e, lbl("i17", i));
         write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-        env_ledger(&e, "2026-09-21T21:40:00");
-        set_clock("2026-09-28T21:40:00");
+        env_state(&e, R_LAST);
+        set_clock(R_NEXTWK);
 
         if (chdir(e.dir) != 0) {
             die(e.dir);
         }
         eq_long(__LINE__, lbl(i == 0 ? "rank_run(NULL)" : "rank_run(\"\")", i),
-                rank_run(i == 0 ? NULL : ""), 0);
+                rank_run(i == 0 ? NULL : "", RANK_MODE_WEEKLY), 0);
         if (chdir(cwd) != 0) {
             die(cwd);
         }
-        expect_scr(&e, UM1_WANT, RANK_ROWS);
+        expect_reset(&e, R_NEXTWK);
         expect_no_temps(&e);
     }
 }
@@ -2747,81 +2026,90 @@ static void case_i17(void)
  * real name briefly unoccupied, and check that the recovery path really runs
  * rather than merely being written down. */
 
-/* The ledger is the first thing committed.  If its rename fails, the whole run
- * must look like it never happened -- and, crucially, must not be stuck
- * half-way: the next launch has to be able to finish the job. */
+/* NX93.TXT is the last file committed.  If its rename fails, the recovery
+ * rename has to put it back - the target holding its old bytes afterwards is
+ * the only evidence on this machine that the recovery ran at all, since a
+ * commit that never started leaves exactly the same file behind. */
 static void case_i18(void)
 {
     Env e;
 
     env_make(&e, "i18");
     write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-    env_ledger(&e, "2026-09-21T21:40:00");
-    env_snapshot(&e);
-    set_clock("2026-09-28T21:40:00");
+    env_state(&e, R_LAST);
+    snap(e.txt, "txt");
+    set_clock(R_NEXTWK);
 
-    rank_test_fault = RANK_FAULT_LEDGER_RENAME;
-    EQL("a failed ledger rename is reported", rank_run(e.dir), 1);
+    rank_test_fault = RANK_FAULT_TXT_RENAME;
+    EQL("a failed state rename is reported", rank_run(e.dir, RANK_MODE_WEEKLY), 1);
     rank_test_fault = RANK_FAULT_NONE;
 
-    expect_unchanged(&e);
+    OK("NX93.TXT still holds its old bytes", snap_same(e.txt, "txt"));
+    OK("and the copy it was parked in is gone", !file_exists(e.oldtxt));
     expect_no_temps(&e);
 
     /* Nothing was committed by halves: retrying at the same instant succeeds.
-     * If the failed attempt had left the ledger or the table in an in-between
-     * state, this second run would fail or produce something other than the
-     * expected table. */
-    EQL("retrying straight away succeeds", rank_run(e.dir), 0);
-    expect_scr(&e, UM1_WANT, RANK_ROWS);
+     * If the failed attempt had left NX93.TXT in an in-between state, this
+     * second run would fail or produce something other than the expected
+     * four files. */
+    EQL("retrying straight away succeeds", rank_run(e.dir, RANK_MODE_WEEKLY), 0);
+    expect_reset(&e, R_NEXTWK);
     expect_no_temps(&e);
-    check_ledger(e.txt, "2026-09-28T21:40:00", 1, SCR_ROWS, RANK_ROWS);
 }
 
-/* The table is committed second, after the ledger is already safely in place.
- * If the table's rename fails, the table must roll back but the ledger must
- * NOT: the backup it now holds is the only copy of the rows, and throwing it
- * away to make the two files agree would be the one unrecoverable move. */
+/* NX93.SCR is committed third, after both records files are already in place.
+ * If its rename fails, NX93.SCR must roll back but the two tables must NOT:
+ * they hold the only copy of the rows a reset takes out of it, and throwing
+ * them away to make the files agree would be the one unrecoverable move. */
 static void case_i19(void)
 {
     Env e;
 
     env_make(&e, "i19");
     write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-    env_ledger_one(&e, "2026-09-21T21:40:00", "2026-09-14T21:40:00");
-    env_snapshot(&e);
-    set_clock("2026-09-28T21:40:00");
+    env_state(&e, R_LAST);
+    snap(e.scr, "scr");
+    snap(e.txt, "txt");
+    set_clock(R_NEXTWK);
 
     rank_test_fault = RANK_FAULT_SCR_RENAME;
-    EQL("a failed table rename is reported", rank_run(e.dir), 1);
+    EQL("a failed table rename is reported", rank_run(e.dir, RANK_MODE_WEEKLY), 1);
     rank_test_fault = RANK_FAULT_NONE;
 
     OK("NX93.SCR rolled back to the byte", snap_same(e.scr, "scr"));
-    OK("the ledger did not roll back with it", !snap_same(e.txt, "txt"));
-    /* Two entries: the one that was already there, plus the backup this run
-     * committed before it got to the table. */
-    check_ledger(e.txt, "2026-09-28T21:40:00", 2, SCR_ROWS, RANK_ROWS);
+    OK("and the copy it was parked in is gone", !file_exists(e.oldscr));
+    OK("NX93.TXT was never reached", snap_same(e.txt, "txt"));
+    expect_rows(e.r30, SCR_ROWS, RANK_ROWS,
+                "RANK30.TXT did not roll back with it");
+    expect_rows(e.who, WHO_WANT, 1, "nor did RANKWHO.TXT");
     expect_no_temps(&e);
 }
 
 /* A run killed between the two renames leaves RANKOLD.* behind.  The commit
  * step frees the name before it needs it, so the next run must sail past the
- * debris and clear it; otherwise every later launch trips over it. */
+ * debris and clear it; otherwise every later launch trips over it.
+ *
+ * Only the two names whose target already exists are planted.  On a first
+ * reset RANK30.TXT and RANKWHO.TXT are absent, so their commits never move
+ * anything aside and never reach the discard - a copy planted under those two
+ * names would correctly survive.  The four-name version of this, from a
+ * baseline where all four files exist, is test_daily.c's I-46. */
 static void case_i20(void)
 {
     Env e;
 
     env_make(&e, "i20");
     write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-    env_ledger(&e, "2026-09-21T21:40:00");
+    env_state(&e, R_LAST);
     write_text(e.oldscr, "stale table left by an interrupted run\r\n");
-    write_text(e.oldtxt, "stale ledger left by an interrupted run\r\n");
+    write_text(e.oldtxt, "stale state left by an interrupted run\r\n");
     OK("the debris is really in place", file_exists(e.oldscr) && file_exists(e.oldtxt));
-    set_clock("2026-09-28T21:40:00");
+    set_clock(R_NEXTWK);
 
-    EQL("leftover RANKOLD files do not block the run", rank_run(e.dir), 0);
-    /* The real files must hold the new table and ledger, not the debris. */
-    expect_scr(&e, UM1_WANT, RANK_ROWS);
-    check_ledger(e.txt, "2026-09-28T21:40:00", 1, SCR_ROWS, RANK_ROWS);
+    EQL("leftover RANKOLD files do not block the run",
+        rank_run(e.dir, RANK_MODE_WEEKLY), 0);
+    /* The real files must hold the new table and state, not the debris. */
+    expect_reset(&e, R_NEXTWK);
     expect_no_temps(&e);
 
     /* The step being pinned is that the commit frees the RANKOLD name *before*
@@ -2834,16 +2122,15 @@ static void case_i20(void)
      * remove() deleted this variant fails and the plain-file one above does not. */
     env_make(&e, "i20-occupied");
     write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-    env_ledger(&e, "2026-09-21T21:40:00");
+    env_state(&e, R_LAST);
     if (mkdir(e.oldscr, 0755) != 0 || mkdir(e.oldtxt, 0755) != 0) {
         die(e.oldscr);
     }
-    set_clock("2026-09-28T21:40:00");
+    set_clock(R_NEXTWK);
 
     EQL("an occupied RANKOLD name is freed before it is needed",
-        rank_run(e.dir), 0);
-    expect_scr(&e, UM1_WANT, RANK_ROWS);
-    check_ledger(e.txt, "2026-09-28T21:40:00", 1, SCR_ROWS, RANK_ROWS);
+        rank_run(e.dir, RANK_MODE_WEEKLY), 0);
+    expect_reset(&e, R_NEXTWK);
     expect_no_temps(&e);
 }
 
@@ -2851,7 +2138,13 @@ static void case_i20(void)
 
 /* A PC-9801 with a flat RTC battery comes up in 1980.  Sailing past that would
  * park lastUpdate in the future and the reset would never come round again, so
- * the run stops and GAME.BAT tells the player to fix the clock with DATE. */
+ * the run stops and GAME.BAT tells the player to fix the clock with DATE.
+ *
+ * The comparison is over all six fields, which is what makes a clock nudged
+ * back inside one day visible as well; test_daily.c's X-2 takes that boundary
+ * down to the second, and the two variants here stay at a day and a year. */
+#define X1_LAST "2026-09-28T21:40:00"
+
 static void case_x1(void)
 {
     static const char *const when[2] = {
@@ -2862,14 +2155,25 @@ static void case_x1(void)
 
     for (i = 0; i < 2; i++) {
         Env e;
+        RankTime last;
+        RankTime now;
+
         env_make(&e, lbl("x1", i));
         write_bytes(e.scr, fix_scr, FIX_SCR_LEN);
-        env_ledger(&e, "2026-09-28T21:40:00");
+        env_state(&e, X1_LAST);
         env_snapshot(&e);
         set_clock(when[i]);
 
+        /* The premise, stated rather than assumed: the instant the run reads
+         * off the clock really does sit before the one NX93.TXT records. */
+        if (rank_time_parse(X1_LAST, &last) != 0
+         || rank_time_parse(when[i], &now) != 0) {
+            die("x1");
+        }
+        eq_long(__LINE__, lbl("the clock is behind the last reset", i),
+                rank_time_before(&now, &last), 1);
         eq_long(__LINE__, lbl("a clock that moved backwards stops the run", i),
-                rank_run(e.dir), 1);
+                rank_run(e.dir, RANK_MODE_WEEKLY), 1);
         expect_unchanged(&e);
         expect_no_temps(&e);
     }
@@ -2921,23 +2225,15 @@ static const Case CASES[] = {
 
     { "U-L1 ledger-read-last-update",       case_ul1 },
     { "U-L2 ledger-reject-corrupt",         case_ul2 },
-    { "U-L3 ledger-write-needs-backups-array", case_ul3 },
-    { "U-L4 ledger-insert-into-empty",      case_ul4 },
-    { "U-L5 ledger-prepend-preserves-tail", case_ul5 },
-    { "U-L6 ledger-huge-streamed",          case_ul6 },
-    { "U-L7 ledger-json-escape",            case_ul7 },
-    { "U-L8 ledger-roundtrip",              case_ul8 },
 
-    { "I-1 run-under-seven-days",           case_i1 },
-    { "I-2 run-exactly-seven-days",         case_i2 },
-    { "I-3 run-eight-days",                 case_i3 },
-    { "I-4 run-first-time-no-ledger",       case_i4 },
-    { "I-5 run-corrupt-ledger-fails-closed", case_i5 },
-    { "I-6 run-backup-precedes-scr-write",  case_i6 },
-    { "I-7 run-ledger-failure-leaves-scr",  case_i7 },
+    { "I-1 run-inside-one-week",            case_i1 },
+    { "I-2 run-crosses-one-monday",         case_i2 },
+    { "I-3 run-crosses-two-mondays",        case_i3 },
+    { "I-4 run-first-time-no-state",        case_i4 },
+    { "I-5 run-unusable-state-fails-closed", case_i5 },
+    { "I-6 run-tables-precede-scr-write",   case_i6 },
+    { "I-7 run-state-failure-leaves-tables", case_i7 },
     { "I-8 run-missing-scr",                case_i8 },
-    { "I-9 run-backups-newest-first",       case_i9 },
-    { "I-10 run-huge-ledger",               case_i10 },
     { "I-11 run-idempotent",                case_i11 },
     { "I-12 run-updates-last-update",       case_i12 },
     { "I-13a run-readonly-dir",             case_i13a },
@@ -2946,8 +2242,8 @@ static const Case CASES[] = {
     { "I-15 run-eleven-row-scr",            case_i15 },
     { "I-16 run-unparsable-line",           case_i16 },
     { "I-17 run-bare-filenames",            case_i17 },
-    { "I-18 run-ledger-rename-rolls-back",  case_i18 },
-    { "I-19 run-scr-rename-keeps-ledger",   case_i19 },
+    { "I-18 run-state-rename-rolls-back",   case_i18 },
+    { "I-19 run-scr-rename-keeps-tables",   case_i19 },
     { "I-20 run-clears-stale-retained",     case_i20 },
 
     { "X-1 run-clock-moved-backwards",      case_x1 }
