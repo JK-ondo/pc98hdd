@@ -5126,6 +5126,14 @@ static void case_i52(void)
            !file_exists(fstage_path(&e, s)));
         OK(lbl_s("and no retained copy appeared:", tab[k].what),
            !file_exists(fstage_keep(&e, s)));
+        /* A first write has nothing to move aside, so no copy was made - and the
+         * message must not send the reader after one.  The stranded wording tells
+         * them to rename a copy back by hand; reached from here it would name a
+         * file that was never written, and they would hunt for it while nothing
+         * was in fact lost.  This is the only observation that separates the two
+         * outcomes: both leave the target absent. */
+        OK(lbl_s("and none is named on screen:", tab[k].what),
+           !cap_has_any_keep_name());
         for (i = 0; i < s; i++) {
             OK(lbl_s("an earlier stage was still written:", FAULT_BASENAME[i]),
                file_exists(fstage_path(&e, i)));
