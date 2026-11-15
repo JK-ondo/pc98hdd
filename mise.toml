@@ -6,7 +6,7 @@ depends = ["verify:*"]
 [tasks."verify:syntax"]
 description = "シェルスクリプトの構文検査"
 run = '''
-for f in 98hdd.sh nx93rank/tests/run.sh nx93rank/build.sh; do
+for f in 98hdd.sh nx93rank/tests/run.sh nx93rank/tests/run-daily.sh nx93rank/build.sh; do
     bash -n "$f" || exit 1
 done
 '''
@@ -23,7 +23,7 @@ description = "変数展開の直後に非ASCIIバイトが来る箇所を検出
 run = '''
 pattern=$(printf '\$[A-Za-z_][A-Za-z_0-9]*[\200-\377]')
 status=0
-for f in 98hdd.sh nx93rank/tests/run.sh; do
+for f in 98hdd.sh nx93rank/tests/run.sh nx93rank/tests/run-daily.sh nx93rank/build.sh; do
     if LC_ALL=C /usr/bin/grep -n "$pattern" "$f"; then
         echo "${f}: 上記は変数名が非ASCIIバイトまで伸びます。\${name} と波括弧で囲んでください。" >&2
         status=1
@@ -32,9 +32,16 @@ done
 exit $status
 '''
 
+# 週次リセットの時代からの回帰。毎日更新への改修でも緑を保つ側。
 [tasks."verify:nx93rank"]
-description = "NX93 週次ランキングリセットの回帰テスト"
+description = "NX93 ランキングの既存回帰テスト"
 run = "nx93rank/tests/run.sh"
+
+# 毎日更新・引数・移行・故障注入 17 点を見る側。2 MiB の旧台帳を扱う 2 ケースが
+# 時間の大半を使うので、この葉だけで 20 秒ほどかかる。
+[tasks."verify:nx93rank-daily"]
+description = "NX93 毎日更新の回帰テスト"
+run = "nx93rank/tests/run-daily.sh"
 
 # dist/RANK.EXE が今の dist/RANK.C から作られたものであることを確かめる。
 # docker は使わない。未ビルドなら通し、古いときだけ落ちる（98 へ古い実行形式が
