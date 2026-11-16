@@ -4,8 +4,8 @@
 
 | スイート | ケース数 | 原典 |
 | --- | --- | --- |
-| `run.sh` | 53 | `.work/plans/nx93-ranking-reset/plan.md` と同 `test-design.md` |
-| `run-daily.sh` | 85 | `.work/plans/nx93-daily-reset/spec.md` と同 `test-design.md` |
+| `run.sh` | 53 | 週次リセットの設計（この README のケース表が現役の記述） |
+| `run-daily.sh` | 85 | [`../docs/SPEC.md`](../docs/SPEC.md) と [`../docs/TEST-DESIGN.md`](../docs/TEST-DESIGN.md) |
 
 `run.sh` は週次リセットの時代からの回帰で、毎日更新への改修でも緑を保つ側。
 `run-daily.sh` は毎日更新・引数・移行・故障注入を見る側で、実装より先に赤として
@@ -61,15 +61,22 @@ cd nx93rank/tests
 `~/test/nx93_110/NX93.SCR`（配布アーカイブ nx93_110.lzh の原本）がリポジトリ外で
 他マシンには無いこと、`hdd/` は実機ミラーなのでテストから読み書きしてはいけないこと。
 
+**原本は `fixtures-src/` にある**（下の `fixtures_daily.h` の節で理由を述べる。
+両スイートで同じ事情）。日付入りの名前なのは、実機の表が時と共に変わり、
+どの時点の標本かがフィクスチャの性質そのものだから。
+
 | シンボル | 出典 | 内容 |
 | --- | --- | --- |
-| `fix_scr` | `hdd/game/nx93/nx93.scr` | 340 B・10 行・CRLF・末尾 0x1A なし |
-| `fix_bak` | `hdd/game/nx93/nx93.bak` | 332 B・10 行・**末尾 0x1A あり**・5 桁と 6 桁 0 詰めが混在 |
-| `fix_def` | `~/test/nx93_110/NX93.SCR` | 340 B・10 行・`Bio_100%` × 10（デフォルト） |
+| `fix_scr` | `fixtures-src/nx93-2026-09-28.scr` | 340 B・10 行・CRLF・末尾 0x1A なし。実記録 10 行（埋め行なし） |
+| `fix_bak` | `fixtures-src/nx93.bak` | 332 B・10 行・**末尾 0x1A あり**・5 桁と 6 桁 0 詰めが混在 |
+| `fix_def` | `~/test/nx93_110/NX93.SCR`（配布アーカイブの原本。**リポジトリ外**） | 340 B・10 行・`Bio_100%` × 10（デフォルト） |
 
-再生成は手作業。3 ファイルを読んで C 文字列リテラルに起こし、書き出したあと
+再生成は手作業。ファイルを読んで C 文字列リテラルに起こし、書き出したあと
 元ファイルと `cmp` でバイト一致を確認する（作成時に 3 件すべてで確認済み）。
-`hdd/` の内容が変わったときだけやり直す。
+
+`fix_def` だけは出典がリポジトリ外にある。NEC/同人の配布物なので取り込めない。
+この 1 本は再生成できない環境があることを承知で残してある（既定 10 行の原本なので
+`rank_default_line()` の実装からも読み取れる）。
 
 ## fixtures_daily.h の由来と再生成
 
@@ -78,8 +85,8 @@ cd nx93rank/tests
 
 | シンボル | 出典 | 内容 |
 | --- | --- | --- |
-| `fix_scr13` | `fixtures-src/nx93.scr`（2026-10-13 pull） | 340 B・10 行・CRLF・末尾 0x1A なし。実記録 6 行＋出荷時の `Bio_100%` 埋め 4 行 |
-| `fix_ledger_lf` | `fixtures-src/nx93.txt`（同 pull） | 581 B・LF 20 本・CR 0 本・非 ASCII 0 バイト。旧 JSON 台帳＝移行の入力 |
+| `fix_scr13` | `fixtures-src/nx93-2026-10-13.scr`（2026-10-13 pull） | 340 B・10 行・CRLF・末尾 0x1A なし。実記録 6 行＋出荷時の `Bio_100%` 埋め 4 行 |
+| `fix_ledger_lf` | `fixtures-src/nx93-2026-10-13.txt`（同 pull） | 581 B・LF 20 本・CR 0 本・非 ASCII 0 バイト。旧 JSON 台帳＝移行の入力 |
 | `fix_ledger_crlf` | 上の LF を CRLF へ戻した**再構成** | 601 B（= 581 + LF 20 本） |
 
 **原本は `fixtures-src/` に置いてバージョン管理下にある。** 元は `hdd/game/nx93/` を
@@ -107,9 +114,9 @@ pull ごとに消える置き方だった。2026-11-16 の pull で実際に両�
 
 ```sh
 cd <リポジトリのルート>
-LC_ALL=C tr -d '\000-\177' < nx93rank/tests/fixtures-src/nx93.scr | wc -c  # 期待 0（非 ASCII）
-LC_ALL=C tr -d '\000-\177' < nx93rank/tests/fixtures-src/nx93.txt | wc -c  # 期待 0（非 ASCII）
-LC_ALL=C tr -cd '\r'       < nx93rank/tests/fixtures-src/nx93.txt | wc -c  # 期待 0（CR。LF 版の前提）
+LC_ALL=C tr -d '\000-\177' < nx93rank/tests/fixtures-src/nx93-2026-10-13.scr | wc -c  # 期待 0（非 ASCII）
+LC_ALL=C tr -d '\000-\177' < nx93rank/tests/fixtures-src/nx93-2026-10-13.txt | wc -c  # 期待 0（非 ASCII）
+LC_ALL=C tr -cd '\r'       < nx93rank/tests/fixtures-src/nx93-2026-10-13.txt | wc -c  # 期待 0（CR。LF 版の前提）
 ```
 
 **手順 0-b（必須）: 原本が今のヘッダの出典と同じものか照合する。** 原本は管理下に
@@ -117,13 +124,13 @@ LC_ALL=C tr -cd '\r'       < nx93rank/tests/fixtures-src/nx93.txt | wc -c  # 期
 差し替えたときに起こし直しを忘れる経路は残る。毎回ハッシュを突き合わせる。期待値:
 
 ```sh
-shasum -a 256 nx93rank/tests/fixtures-src/nx93.scr nx93rank/tests/fixtures-src/nx93.txt
+shasum -a 256 nx93rank/tests/fixtures-src/nx93-2026-10-13.scr nx93rank/tests/fixtures-src/nx93-2026-10-13.txt
 # bf5780403bdc5586cc4ebba0da20c4a8cb38a5e9855c96ae7a5a7af645210da5  nx93.scr
 # ad0b0b62e74060e853699eefa00f08db7298511108c9ccbcbc041baeec8a17cf  nx93.txt
 ```
 
 一致しないなら、原本が別の pull のものに替わっている。その場合は再生成する前に、
-**どの期待値がその差で動くのか**を `.work/plans/nx93-daily-reset/test-design.md` で
+**どの期待値がその差で動くのか**を [`../docs/TEST-DESIGN.md`](../docs/TEST-DESIGN.md) で
 確かめること。`fix_scr13` は `U-G8`・`I-26`・`I-37` のオラクルの出所なので、
 原本が替わると試験の期待値がまとめて変わる。
 
@@ -141,16 +148,16 @@ shasum -a 256 nx93rank/tests/fixtures-src/nx93.scr nx93rank/tests/fixtures-src/n
 
 ```sh
 # fix_scr13（原本は CRLF。tr で CR を落としてから \r\n を書き戻す）
-LC_ALL=C tr -d '\r' < hdd/game/nx93/nx93.scr \
+LC_ALL=C tr -d '\r' < nx93rank/tests/fixtures-src/nx93-2026-10-13.scr \
   | LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/    "/' -e 's/$/\\r\\n"/'
 
 # fix_ledger_lf（原本は LF のまま）
 LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/    "/' -e 's/$/\\n"/' \
-  hdd/game/nx93/nx93.txt
+  nx93rank/tests/fixtures-src/nx93-2026-10-13.txt
 
 # fix_ledger_crlf（同じ原本の LF を CRLF へ戻す）
 LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/    "/' -e 's/$/\\r\\n"/' \
-  hdd/game/nx93/nx93.txt
+  nx93rank/tests/fixtures-src/nx93-2026-10-13.txt
 ```
 
 出力を `static const char <名前>[] =` の下に貼り、最終行の後ろに `;` を置く。
@@ -192,8 +199,8 @@ int main(void)
 EOF
 cd "${TMPDIR:-/tmp}" && clang -x c -std=gnu89 -Wall -Wextra -Werror \
     -I <リポジトリのルート>/nx93rank/tests emit.c -o emit && ./emit
-cmp scr.out <リポジトリのルート>/hdd/game/nx93/nx93.scr     # 340 B 一致
-cmp lf.out  <リポジトリのルート>/hdd/game/nx93/nx93.txt     # 581 B 一致
+cmp scr.out <リポジトリのルート>/nx93rank/tests/fixtures-src/nx93-2026-10-13.scr   # 340 B 一致
+cmp lf.out  <リポジトリのルート>/nx93rank/tests/fixtures-src/nx93-2026-10-13.txt   # 581 B 一致
 LC_ALL=C tr -d '\r' < crlf.out | cmp - lf.out               # 601 B から CR を全削除して 581 B へ戻る
 ```
 
@@ -484,7 +491,7 @@ DOS には置き換える `rename` が無いので、確定は「退避（本名
   巻き戻りを無視 →`X-1`、失敗時に一時ファイルを残す →`I-6`。
   スコア比較を `strcmp` にする変異はこのスイートでは殺せなくなった（`U-M2` の 5 桁行が
   鍵の畳み込みで消えたため）ので、`run-daily.sh` の `U-G10` が引き継いでいる。
-  毎日更新ぶんの対応表は `.work/plans/nx93-daily-reset/test-design.md` §14 にある。
+  毎日更新ぶんの対応表は [`../docs/TEST-DESIGN.md`](../docs/TEST-DESIGN.md) §14 にある。
 - 確定（commit）の 3 段についても、いまの実装のコピーに仕込んで確認した。
   失敗時に退避から戻さない →`I-18`/`I-19`、成功後に `RANKOLD.*` を消さない
   →`I-2` ほか多数（`expect_no_temps` が全統合ケースで見ている）、
@@ -493,7 +500,7 @@ DOS には置き換える `rename` が無いので、確定は「退避（本名
   （オブジェクトが無いのに `nm` のエラーを飲んで緑を出す事故＝設計「検証済みの罠」3 番）。
 
 `run-daily.sh` の側は、実装の 3 フェーズを通して 1 ケースずつ赤から緑へ移ったことで
-帰属を確かめている。手順と実測は `.work/plans/nx93-daily-reset/progress.md` にある。
+帰属を確かめている。実測は [`../docs/TEST-DESIGN.md`](../docs/TEST-DESIGN.md) §14.3 にある。
 
 この過程で自分のテストの穴が 1 件見つかって直した。`U-P5`/`U-P6` が 6 桁スコアの行しか
 使っておらず、6 桁では「前から 13 バイト目」と「末尾から 19 バイト目」が同じ位置に
