@@ -8,3 +8,8 @@
 # バイナリ。改行変換もテキスト差分もさせない。
 *.exe binary
 *.EXE binary
+
+# フィクスチャの原本は実機から採ったバイト列そのもので、改行も原本の一部。
+# nx93.scr は CRLF、nx93.txt は LF で、上の eol=lf に触らせると前者が壊れ、
+# 試験のヘッダが「この原本から起こした」と言えなくなる。
+nx93rank/tests/fixtures-src/** binary

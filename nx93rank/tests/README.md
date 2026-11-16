@@ -78,13 +78,24 @@ cd nx93rank/tests
 
 | シンボル | 出典 | 内容 |
 | --- | --- | --- |
-| `fix_scr13` | `hdd/game/nx93/nx93.scr`（2026-10-13 pull） | 340 B・10 行・CRLF・末尾 0x1A なし。実記録 6 行＋出荷時の `Bio_100%` 埋め 4 行 |
-| `fix_ledger_lf` | `hdd/game/nx93/nx93.txt`（同 pull） | 581 B・LF 20 本・CR 0 本・非 ASCII 0 バイト。旧 JSON 台帳＝移行の入力 |
+| `fix_scr13` | `fixtures-src/nx93.scr`（2026-10-13 pull） | 340 B・10 行・CRLF・末尾 0x1A なし。実記録 6 行＋出荷時の `Bio_100%` 埋め 4 行 |
+| `fix_ledger_lf` | `fixtures-src/nx93.txt`（同 pull） | 581 B・LF 20 本・CR 0 本・非 ASCII 0 バイト。旧 JSON 台帳＝移行の入力 |
 | `fix_ledger_crlf` | 上の LF を CRLF へ戻した**再構成** | 601 B（= 581 + LF 20 本） |
 
-`fix_ledger_crlf` は実機を観測したものではない。「98 上の `NX93.TXT` が本当にこの
-バイト列か」は実機確認の範囲で、スイート側は「両改行で同じ結果」というより弱く
-正しい関係だけを表明する（`U-V3`）。
+**原本は `fixtures-src/` に置いてバージョン管理下にある。** 元は `hdd/game/nx93/` を
+直に指していたが、`hdd/` は管理外で `98hdd pull` が黙って上書きするため、原本が
+pull ごとに消える置き方だった。2026-11-16 の pull で実際に両方が替わり、ヘッダの
+出典が作業ツリーから失われかけた。原本は 921 バイトしかないので、取り込んで固定する。
+`.gitattributes` の `nx93rank/tests/fixtures-src/** binary` が改行変換を止めている
+（`nx93.scr` は CRLF なので、リポジトリ既定の `eol=lf` に触らせると壊れる）。
+
+`fix_ledger_crlf` のバイト列そのものは実機を観測したものではない。ただし**換算の
+関係は実機で実測した**: 2026-11-16 の pull で得た台帳は LF 3,181 B・95 行で、同じ
+ファイルを `98hdd ls` が HDD 上で **3,276 B** と報告した（3,181 ＋ 95 = 3,276）。
+つまり「LF のバイト数 ＋ 行数 ＝ 実機の CRLF のバイト数」は実機で成り立つ。これを
+581 B・20 行の原本へ当てると 601 B になる。推定ではなく、実測した関係からの導出。
+それでも「98 上のこの台帳が本当にこのバイト列か」は別の問いなので、スイート側は
+「両改行で同じ結果」というより弱く正しい関係だけを表明する（`U-V3`）。
 
 ### 再生成の手順
 
@@ -96,17 +107,17 @@ cd nx93rank/tests
 
 ```sh
 cd <リポジトリのルート>
-LC_ALL=C tr -d '\000-\177' < hdd/game/nx93/nx93.scr | wc -c   # 期待 0（非 ASCII）
-LC_ALL=C tr -d '\000-\177' < hdd/game/nx93/nx93.txt | wc -c   # 期待 0（非 ASCII）
-LC_ALL=C tr -cd '\r'       < hdd/game/nx93/nx93.txt | wc -c   # 期待 0（CR。LF 版の前提）
+LC_ALL=C tr -d '\000-\177' < nx93rank/tests/fixtures-src/nx93.scr | wc -c  # 期待 0（非 ASCII）
+LC_ALL=C tr -d '\000-\177' < nx93rank/tests/fixtures-src/nx93.txt | wc -c  # 期待 0（非 ASCII）
+LC_ALL=C tr -cd '\r'       < nx93rank/tests/fixtures-src/nx93.txt | wc -c  # 期待 0（CR。LF 版の前提）
 ```
 
-**手順 0-b（必須）: 原本が今のヘッダの出典と同じものか照合する。** `hdd/` はバージョン
-管理の外にあり、次の `98hdd pull` が黙って上書きする。差分で気づく手立ては無いので、
-毎回ハッシュを突き合わせる。期待値:
+**手順 0-b（必須）: 原本が今のヘッダの出典と同じものか照合する。** 原本は管理下に
+入ったので pull では動かなくなったが、ヘッダは手で起こしたものなので、原本を
+差し替えたときに起こし直しを忘れる経路は残る。毎回ハッシュを突き合わせる。期待値:
 
 ```sh
-shasum -a 256 hdd/game/nx93/nx93.scr hdd/game/nx93/nx93.txt
+shasum -a 256 nx93rank/tests/fixtures-src/nx93.scr nx93rank/tests/fixtures-src/nx93.txt
 # bf5780403bdc5586cc4ebba0da20c4a8cb38a5e9855c96ae7a5a7af645210da5  nx93.scr
 # ad0b0b62e74060e853699eefa00f08db7298511108c9ccbcbc041baeec8a17cf  nx93.txt
 ```
@@ -118,6 +129,13 @@ shasum -a 256 hdd/game/nx93/nx93.scr hdd/game/nx93/nx93.txt
 
 0 でなければそこで止める。日本語名が入ったのなら、`fix_ledger_crlf` を pull から
 作ってはいけない（実機から別の経路で採るか、CRLF 版の表明を落とす）。
+
+**原本を新しい pull のものへ差し替える判断は、それ自体が独立した決定である。**
+新しい実機の表が必ず良い原本とは限らない。`fix_scr13` の役目は決定 7（埋め行を
+記録として扱わない）と決定 8（末尾マークを無視する）を同時に踏む入力であることで、
+そのために「実記録 6 行・鍵が全員 `OMZN`・埋め 4 行」という形が要る。2026-11-16 の
+実機の表は実記録 4 行・別人 1 名を含み、鍵が 1 種類でなくなるので、同じ網を
+張らない。原本を替えるなら、網が保たれるかを先に確かめる。
 
 **手順 1: リテラルに起こす。** 1 行 1 リテラルで、行末の改行まで含める。
 
