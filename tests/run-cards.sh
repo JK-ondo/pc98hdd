@@ -168,6 +168,22 @@ RC
     else
         pf_ok "H6 home-sandboxed"
     fi
+
+    # ---- H7 run_98hdd が終了コードを正しく伝える
+    # これが落ちると assert_exit が全部ひとつ前の呼び出しの古い値を見る。
+    # 実際に一度その欠陥を作った: out=$(run_98hdd ...) と書くとサブシェルで
+    # 走るので h_last_status が親へ伝わらず、期待 1 のところ 99 のままだった。
+    # 終了コードの表明が全部「見ていないのに緑」になる。
+    h_last_status=99
+    run_98hdd "$pf_scratch" this-is-not-a-command >/dev/null 2>&1 || true
+    if [ "$h_last_status" = "1" ]; then
+        pf_ok "H7 status-propagated"
+    else
+        pf_fail "H7 status-propagated" \
+            "未知のコマンドは終了 1 のはずが h_last_status=${h_last_status}" \
+            "99 のままなら、run_98hdd をコマンド置換で包んでいる（サブシェルが飲む）" \
+            "この状態では assert_exit が全部古い値を見る"
+    fi
 fi
 
 if [ "$preflight_failed" -ne 0 ]; then
@@ -254,20 +270,20 @@ else
 fi
 
 # =========================================================== 下位スイート
-suite_ok=0
-suite_fail=0
+# source する（別プロセスで起動すると件数が集計されない）。下位スイートは
+# exit を書かない — 書くとランナーごと終わって残りが走らない。
 for suite in unit integration cli; do
     f="${here}/${suite}.sh"
     [ -f "$f" ] || continue
-    if bash "$f"; then :; else suite_fail=$((suite_fail + 1)); fi
+    # shellcheck source=/dev/null
+    . "$f"
 done
 
 # =================================================================== 集計
-total_fail=$(( h_fail_count + suite_fail ))
 printf '\n'
-if [ "$total_fail" -eq 0 ]; then
+if [ "$h_fail_count" -eq 0 ]; then
     printf '前提検査 6 件・ケース %d 件、失敗 0。\n' "$h_ok_count"
     exit 0
 fi
-printf 'ケース %d 件成功、%d 件失敗。\n' "$h_ok_count" "$total_fail" >&2
+printf 'ケース %d 件成功、%d 件失敗。\n' "$h_ok_count" "$h_fail_count" >&2
 exit 1

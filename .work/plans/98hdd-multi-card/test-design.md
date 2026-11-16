@@ -38,6 +38,12 @@
 - **N3: mtools の呼び出しをすべて 1 箇所（`run_mtools`）に通し続ける。** 試験が
   偽の mtools を `PATH` 先頭に置いて呼び出しを観測するため（§5.1）。直接 `mdir` などを
   呼ぶ経路が増えると、その経路だけ観測から漏れる。
+- **N4: 素の `mktemp` を `mktemp "${TMPDIR:-/tmp}/98hdd.XXXXXXXX"` にする**（5 箇所：
+  87・155・270・284・373 行）。**macOS の `mktemp` は引数なしだと `TMPDIR` を無視して
+  `/var/folders/.../T/` を使う**ので、`TMPDIR` を絞った環境では
+  `Operation not permitted` で落ちる。`nx93rank/tests/run.sh` は既に明示的な雛形を
+  使っており（`mktemp -d "${TMPDIR:-/tmp}/nx93rank.XXXXXXXX"`）、**98hdd.sh だけが
+  プロジェクトの作法から外れている**。通常の環境での振る舞いは変わらない。
 
 ## 2. ハーネス
 

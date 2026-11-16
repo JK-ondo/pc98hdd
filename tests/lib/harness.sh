@@ -37,6 +37,16 @@ HARNESS_TOTAL_SECTORS=32768
 h_ok_count=0
 h_fail_count=0
 h_verbose=${HARNESS_VERBOSE:-0}
+h_filter=${HARNESS_FILTER:-}
+
+# -k で絞られているとき、このケースを走らせるかを答える。
+h_want() {              # h_want <label>
+    [ -z "$h_filter" ] && return 0
+    case "$1" in
+        *"$h_filter"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 h_pass() {
     h_ok_count=$((h_ok_count + 1))
@@ -155,6 +165,68 @@ make_truncated() {      # make_truncated <path>
     dd if=/dev/zero of="$1" bs=1 count=16 2>/dev/null
 }
 
+# イメージにファイルを 1 つ置く。pull の試験は空のイメージでは張れない
+# （取り出すものが無いと「ファイルが見つかりません」で終わる）。
+seed_image() {          # seed_image <img> <dos-path> <content>
+    local img="$1" dos="$2" body="$3" tmp
+    # 素の mktemp は macOS では TMPDIR を無視して /var/folders/.../T/ を使い、
+    # TMPDIR を絞った環境では Operation not permitted で落ちる。雛形を明示する。
+    tmp=$(mktemp "${TMPDIR:-/tmp}/98hdd-seed.XXXXXXXX") || return 1
+    printf '%s' "$body" > "$tmp"
+    MTOOLS_SKIP_CHECK=1 "$HARNESS_REAL_MCOPY" -o \
+        -i "${img}@@${HARNESS_OFFSET}" "$tmp" "::/${dos}" 2>/dev/null
+    local st=$?
+    rm -f "$tmp"
+    return $st
+}
+
+# 砂場に ~/.98hddrc を書く。現行形式（カード定義を使わない形）。
+write_rc() {            # write_rc <scratch> <image> [offset]
+    local scratch="$1" img="$2" off="${3:-$HARNESS_OFFSET}"
+    mkdir -p "${scratch}/home"
+    cat > "${scratch}/home/.98hddrc" <<RC
+HDD_IMAGE="${img}"
+HDD_OFFSET=${off}
+HDD_DRIVE="p"
+BASE_DIR="${scratch}/home/9801"
+SEND_DIR="${scratch}/home/9801/send"
+PULL_DIR="${scratch}/home/9801/hdd"
+RC
+}
+
+# 砂場に ~/.mtoolsrc を書く。
+#
+# **これが要るのは現行実装の都合である。** 現行は mtools のドライブ p: を使い、
+# その定義は ~/.mtoolsrc にしかない。HOME を砂場へ向けると ~/.mtoolsrc も
+# 視界から消えるので、現行実装は Drive 'P:' not supported で落ちる。
+#
+# つまり HOME の隔離が、この機能が外そうとしている依存をそのまま露出させた。
+# 後方互換のケースは利用者の現在の環境を再現する必要があるので、ここで書く。
+# **実装後は要らなくなる**こと自体が I-B7 の見るものである。
+write_mtoolsrc() {      # write_mtoolsrc <scratch> <image> [offset]
+    local scratch="$1" img="$2" off="${3:-$HARNESS_OFFSET}"
+    mkdir -p "${scratch}/home"
+    cat > "${scratch}/home/.mtoolsrc" <<MT
+drive p:
+    file="${img}"
+    offset=${off}
+    fat_bits=16
+    filter
+MT
+}
+
+# 砂場にカード定義を書く。
+write_card() {          # write_card <scratch> <name> <image> <serial> [pull_dir]
+    local scratch="$1" name="$2" img="$3" serial="$4" pull="${5:-}"
+    mkdir -p "${scratch}/home/.98hdd/cards"
+    {
+        printf 'IMAGE="%s"\n' "$img"
+        printf 'OFFSET=%s\n' "$HARNESS_OFFSET"
+        printf 'SERIAL="%s"\n' "$serial"
+        [ -n "$pull" ] && printf 'PULL_DIR="%s"\n' "$pull"
+    } > "${scratch}/home/.98hdd/cards/${name}.conf"
+}
+
 # ------------------------------------------- シリアル読み取り（独立実装）
 # 被試験対象の read_serial とは別に書く。同じコードを両側に置くと、
 # 誤りが両側で打ち消し合って何も検証しないことになる。
@@ -229,17 +301,25 @@ mtools_log_specs() {    # mtools_log_specs <logfile>
 # --------------------------------------------------------- 98hdd の起動
 # HOME を砂場へ向け、PATH 先頭に偽 mtools を置いて起動する。
 # 標準出力と標準エラーをまとめて捕り、終了コードを h_last_status に残す。
+# **コマンド置換で呼んではいけない。** out=$(run_98hdd ...) と書くとサブシェルで
+# 走るので、ここで設定した h_last_status が親へ伝わらず、assert_exit が
+# ひとつ前の呼び出しの古い値を見る。実測で確認した（期待 1 のところ 99 のまま）。
+#
+# 正しい使い方:
+#     run_98hdd "$scratch" ls
+#     assert_exit "..." 0 "$h_last_status"
+#     assert_contains "..." "HELLO" "$h_last_output"
+#
+# 標準出力へ出さないのは、うっかりコマンド置換で包む書き方を誘わないため。
+# H7 がこの経路の健全性を見る。
 h_last_status=0
 h_last_output=""
 
 run_98hdd() {           # run_98hdd <scratch> <args...>
     local scratch="$1"; shift
-    local out
-    out=$(cd "$scratch" && HOME="${scratch}/home" \
+    h_last_output=$(cd "$scratch" && HOME="${scratch}/home" \
           PATH="${scratch}/bin:${PATH}" \
           MTOOLS_LOG="${scratch}/mtools.log" \
           bash "${HARNESS_SUT}" "$@" 2>&1)
     h_last_status=$?
-    h_last_output="$out"
-    printf '%s' "$out"
 }
