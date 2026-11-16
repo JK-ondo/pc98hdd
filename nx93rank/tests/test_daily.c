@@ -446,13 +446,17 @@ static HUNUSED int cap_has_any(const char *const *words, int n)
 
 /* W2's wording is the implementation's to choose, so the design fixes a floor
  * rather than a spelling (test-design.md section 10.7): the retained name has to
- * appear verbatim, and the line has to say that the copy goes away and that
- * saving it first is an option.  The two vocabulary sets are lexical proxies,
- * not a check that the sentence reads well; that stays with audit. */
+ * appear verbatim, and the line has to say that the copy goes away.  The
+ * vocabulary set is a lexical proxy, not a check that the sentence reads well;
+ * that stays with audit.
+ *
+ * It used to require a second word offering to save the copy first.  The discard
+ * runs on the statement after the notice, so there is no moment at which the
+ * reader could take that offer up, and the requirement was asking the program to
+ * name an action nobody can perform.  The floor is now the name and the fact. */
 static const char *const W2_GONE[7] = {
     "discard", "discarded", "delete", "deleted", "remove", "removed", "removing"
 };
-static const char *const W2_SAVE[5] = { "save", "rename", "copy", "keep", "before" };
 
 /* The four retained names, which is what distinguishes a W2 report from any
  * other line.  The negative variants assert the absence of these rather than the
@@ -4211,7 +4215,6 @@ static void case_i46(void)
             }
             EQL("four reports, one per retained copy, not eight", reports, 4);
             OK("the warning says the copy goes away", cap_has_any(W2_GONE, 7));
-            OK("and that it could be kept first", cap_has_any(W2_SAVE, 5));
             OK("in ASCII", cap_ascii_only());
         }
         expect_rows_file(e.scr, G8_WANT, RANK_ROWS, lbl("NX93.SCR", variant));
@@ -5217,8 +5220,6 @@ static void case_i53(void)
                 cap_count(KEEP_NAMES[s]), 1);
         OK(lbl_s("the line says the copy goes away:", KEEP_NAMES[s]),
            cap_has_any(W2_GONE, 7));
-        OK(lbl_s("and that it could be kept first:", KEEP_NAMES[s]),
-           cap_has_any(W2_SAVE, 5));
         OK(lbl_s("in ASCII:", KEEP_NAMES[s]), cap_ascii_only());
         /* One report per copy discarded, so the other three names stay out of
          * it; a hard-coded name would show up here as well. */

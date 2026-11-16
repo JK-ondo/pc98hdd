@@ -1671,13 +1671,17 @@ static const char *rank_basename(const char *path)
  * missing and the discard below is never reached.  The run after that finds the
  * target in place and the copy in the way, and with GAME.BAT calling RANK every
  * day that is about a day's notice.  So the discard says so first.  The exit
- * code stays 0: this is the tidying up a successful reset does. */
+ * code stays 0: this is the tidying up a successful reset does.
+ *
+ * This is a notice, not advice.  The discard follows on the next statement, so
+ * there is no moment at which the reader could act on the copy, and telling
+ * them to save it first would name something they cannot do.  What it buys them
+ * is knowing that a run was once interrupted here. */
 static void rank_report_keep(const char *keep)
 {
     fputs("RANK: removing ", stdout);
     fputs(rank_basename(keep), stdout);
     fputs(", a copy an interrupted run left behind.\n", stdout);
-    rank_say("RANK: save it elsewhere first if you still want it.");
 }
 
 /* Put `tmp` in place of `dst` without ever leaving `dst` missing.
@@ -2044,7 +2048,9 @@ static int rank_collect(int migrate)
             rank_say("RANK: ERROR RANKWHO.TXT holds two rows for one player,");
             rank_say("RANK: a line that cannot be read, or more than a hundred");
             rank_say("RANK: rows.  Delete RANKWHO.TXT and the next run builds");
-            rank_say("RANK: it again; the past records are in RANK30.TXT.");
+            rank_say("RANK: it again from NX93.SCR.  Rows that only");
+            rank_say("RANK: RANKWHO.TXT held are lost that way, so copy out");
+            rank_say("RANK: any you added by hand - RANK30.TXT has the rest.");
             rank_say("RANK: nothing was changed.");
             return -1;
         }
