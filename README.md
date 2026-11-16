@@ -352,7 +352,45 @@ The BlueSCSI disk image is not included either; bring your own.
 
 ---
 
-## 9. License
+## 9. Contributing
+
+Patches are welcome, including from people whose machine is nothing like the author's.
+
+**Branch from `main`, push the branch, open a pull request against `main`.** Please do not
+commit to `main` directly. There is no long-lived `dev` branch; a branch per change, deleted
+once merged, keeps `main` the only thing anyone has to trust.
+
+**`main` is meant to stay green**, so a fresh clone can run the checks and see them pass:
+
+```sh
+mise run verify      # everything
+mise run format      # fixes formatting
+```
+
+`nx93rank/` is a DOS program, so two of its checks need more than a clone:
+
+- `mise run build:nx93rank` cross-compiles `RANK.EXE` and **pulls a Docker image**. You only
+  need it if you change `RANK.C` — the checked-in `RANK.EXE` must match, and
+  `verify:nx93rank-binary` compares their hashes.
+- The test suites themselves need only `clang` and `nm`. No network, nothing to install.
+
+**If you change how `RANK.C` behaves, change [`nx93rank/docs/SPEC.md`](nx93rank/docs/SPEC.md)
+first.** The tests are derived from that document rather than from the code, which is the only
+reason they verify anything; fitting an expected value to new behavior quietly removes the
+check. [`nx93rank/docs/DECISIONS.md`](nx93rank/docs/DECISIONS.md) says why each rule has the
+shape it does — several of the plainer-looking alternatives were tried and rejected.
+
+**Say what you could not test.** Much of this only fails on real hardware: 16-bit `int`, the
+DOS file API, QuickC, and whichever PC-98 model you do or do not own. An untested claim that
+is labelled as such is useful; an untested claim that is not is a trap for the next person.
+The machines this has actually run on are listed in section 1.
+
+Please do not add copyrighted material or anyone's personal data to the repository — see
+section 8. Once it is in the history it cannot be taken back out.
+
+---
+
+## 10. License
 
 MIT. See [LICENSE](LICENSE).
 
