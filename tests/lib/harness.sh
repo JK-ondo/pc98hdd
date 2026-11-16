@@ -323,3 +323,25 @@ run_98hdd() {           # run_98hdd <scratch> <args...>
           bash "${HARNESS_SUT}" "$@" 2>&1)
     h_last_status=$?
 }
+
+# --------------------------------------------- 関数を直接呼ぶ（単体試験）
+# 被試験対象を source して、断片を eval する。
+#
+# **source が main を走らせる状態でも動く。** main は引数なしだと help を出して
+# 戻るだけなので、出力を捨てれば害がない。N1（BASH_SOURCE で包む）を当てた後は
+# main が走らなくなるが、呼び方は変わらない — この形は両方の世界で通る。
+#
+# 断片は環境変数で渡して eval する。文字列へ埋め込むと引用符の入れ子が破れる。
+# set +e は source の後に敷く（被試験対象が set -e を立てるので、そのままでは
+# 1 つ目の失敗で断片が終わってしまう）。
+sut_eval() {            # sut_eval <scratch> <snippet>
+    local scratch="$1" snip="$2"
+    h_last_output=$(SUT="$HARNESS_SUT" SNIP="$snip" \
+          HOME="${scratch}/home" PATH="${scratch}/bin:${PATH}" \
+          bash -c '
+              . "$SUT" >/dev/null 2>&1
+              set +e
+              eval "$SNIP"
+          ' 2>&1)
+    h_last_status=$?
+}
