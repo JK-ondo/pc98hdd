@@ -6,8 +6,17 @@ NyaHaX'93 のランキング（`NX93.SCR`）は上位 10 件しか持たない�
 消える記録は平文 2 枚（歴代トップ 30 と、ユーザごとの最高記録）へ移すので、
 98 の上で `TYPE RANK30.TXT` と打てばそのまま読める。
 
-仕様と設計の確定版は `.work/plans/nx93-daily-reset/plan.md` と同ディレクトリの
-`spec.md`。週次のみだった時代の経緯は `.work/plans/nx93-ranking-reset/` にある。
+この README は**使い方**を述べる。中を変えるなら `docs/` を読むこと:
+
+| | |
+| --- | --- |
+| [`docs/SPEC.md`](docs/SPEC.md) | **契約。** 引数・画面出力・ファイル形式・不変条件・エラー分類・受け入れ基準 |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | **なぜこの形なのか。** 決定 1〜25 と、それぞれ採らなかった案 |
+| [`docs/TEST-DESIGN.md`](docs/TEST-DESIGN.md) | **試験設計。** ケースごとのオラクルと、何を殺すかの実測 |
+| [`tests/README.md`](tests/README.md) | 試験の走らせ方とフィクスチャの作り直し方 |
+
+試験は仕様から起こしてあり、実装から逆算していない。`RANK.C` を変えて赤くなったら、
+期待値より先に仕様を見ること。
 
 ## 構成
 

@@ -4,7 +4,7 @@
  *   test_daily <scratch-dir> [name-substring]
  *
  * Exits 0 only when every selected case passed and at least one case ran.
- * Cases are named after .work/plans/nx93-daily-reset/test-design.md, which is
+ * Cases are named after docs/TEST-DESIGN.md, which is
  * the sole authority for every oracle here.  Oracles were derived from spec.md
  * by hand; none of them was read back out of an implementation.  This suite is
  * written before the implementation exists, so it is expected to be red: the

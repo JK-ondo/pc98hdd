@@ -11,7 +11,7 @@
 # 依存は clang と nm のみ。ネットワークも追加インストールも使わない。
 # 一時ファイルは ${TMPDIR} 配下にだけ作り、終了時に必ず消す。
 #
-# ケース名は .work/plans/nx93-daily-reset/test-design.md の番号に対応する。
+# ケース名は docs/TEST-DESIGN.md の番号に対応する。
 # S10..S12・S6'・H2..H4 はここ、それ以外は test_daily.c と test_cli.c にある。
 #
 # 既存 run.sh とは独立に走る。mise からは呼ばれない（接続は実装が緑になってから）。

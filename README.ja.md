@@ -288,8 +288,8 @@ clone するとこれだけが入っています。
 ├── SPEC.md          詳細仕様書
 ├── LICENSE          MIT
 ├── mise.toml        検査タスク(mise run verify)
-├── nx93rank/        おまけ: NyaHaX'93 のランキングを定期リセットする DOS 用プログラム
-└── .work/plans/     開発中の設計メモ
+└── nx93rank/        おまけ: NyaHaX'93 のランキングを定期リセットする DOS 用プログラム
+    └── docs/        その契約・決定記録・試験設計
 ```
 
 残りは使っていくうちに手元にできるもので、リポジトリには入りません(`.gitignore` 済み)。

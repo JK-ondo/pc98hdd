@@ -9,7 +9,7 @@
 # 依存は clang と nm のみ。ネットワークも追加インストールも使わない。
 # 一時ファイルは ${TMPDIR} 配下にだけ作り、終了時に必ず消す。
 #
-# ケース名は .work/plans/nx93-ranking-reset/test-design.md の番号に対応する。
+# ケース名は tests/README.md のケース表の番号に対応する。
 # S1..S7 はここ、それ以外は test_rank.c にある。
 #
 set -euo pipefail

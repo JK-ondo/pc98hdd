@@ -14,7 +14,7 @@
  * carries the unused attribution: -Wall includes -Wunused-function and the
  * build is -Werror.
  *
- * Case names come from .work/plans/nx93-daily-reset/test-design.md, which is
+ * Case names come from docs/TEST-DESIGN.md, which is
  * the sole authority for every oracle.  No oracle here was read back out of an
  * implementation.
  */

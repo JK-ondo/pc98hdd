@@ -15,9 +15,10 @@
  * extension as C++, which silently discards -std=c89; every build path here
  * passes -x c or copies the file to a lowercase name.
  *
- * The rules this program implements live in
- * .work/plans/nx93-daily-reset/plan.md; the contract it is tested against
- * lives in .work/plans/nx93-daily-reset/spec.md.
+ * The contract this program is tested against lives in docs/SPEC.md, and
+ * docs/DECISIONS.md says why each rule has the shape it does.  Read the
+ * latter before changing behaviour: several of the plainer-looking
+ * alternatives were tried and rejected for reasons the code cannot show.
  *
  * Constraints that shape the whole file, none of which a compiler will
  * remind you about:

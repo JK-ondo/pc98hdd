@@ -4,7 +4,7 @@
  *   test_rank <scratch-dir> [name-substring]
  *
  * Exits 0 only when every selected case passed and at least one case ran.
- * Cases are named after .work/plans/nx93-ranking-reset/test-design.md, which is
+ * Cases are named after the case table in tests/README.md, which is
  * the authority for every oracle here.  Oracles were derived from plan.md's
  * "更新の規則" by hand; none of them was read back out of an implementation.
  *

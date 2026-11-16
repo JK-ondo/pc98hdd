@@ -300,8 +300,8 @@ A fresh clone contains only this:
 ├── SPEC.md          detailed specification (Japanese)
 ├── LICENSE          MIT
 ├── mise.toml        check tasks (mise run verify)
-├── nx93rank/        extra: a DOS program that periodically resets the NyaHaX'93 high score table
-└── .work/plans/     design notes from development (Japanese)
+└── nx93rank/        extra: a DOS program that periodically resets the NyaHaX'93 high score table
+    └── docs/        its contract, decision log and test design (Japanese)
 ```
 
 The rest accumulates as you use the tool and is not in the repository (it is in

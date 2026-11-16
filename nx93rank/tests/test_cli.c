@@ -4,7 +4,7 @@
  *   test_cli <scratch-dir> [name-substring]
  *
  * Exits 0 only when every selected case passed and at least one case ran.
- * Covers A-1..A-7 of .work/plans/nx93-daily-reset/test-design.md section 11:
+ * Covers A-1..A-7 of docs/TEST-DESIGN.md section 11:
  * usage and argc counting, the exit code vocabulary, the directory argv[0]
  * names, the mode lexeme and the elapsed day count, the differential that keeps
  * the thirteen messages apart, and whether E8's advice actually works.
