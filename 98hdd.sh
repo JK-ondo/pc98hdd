@@ -84,7 +84,7 @@ to_83() {
 check_name_collision() {
     local base_dir="$1" collision=0
     local tmp_seen
-    tmp_seen=$(mktemp)
+    tmp_seen=$(mktemp "${TMPDIR:-/tmp}/98hdd.XXXXXXXX")
 
     while IFS= read -r src; do
         [[ -f "$src" ]] || continue
@@ -152,7 +152,7 @@ cmd_send() {
     ok "ファイル名チェック: OK"
 
     # EXITトラップはトップレベルで実行されるため local にしない（set -u対策）
-    tmp_dir=$(mktemp -d)
+    tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/98hdd.XXXXXXXX")
     trap 'if [[ -n "${tmp_dir:-}" ]]; then rm -rf "$tmp_dir"; fi' EXIT
 
     info "変換中（テキスト: UTF-8+LF → Shift-JIS+CR+LF）..."
@@ -267,7 +267,7 @@ cmd_pull() {
 
         # まず一時ファイルに取り出す（失敗時は既存ミラーに触れない）
         local tmp_raw
-        tmp_raw=$(mktemp)
+        tmp_raw=$(mktemp "${TMPDIR:-/tmp}/98hdd.XXXXXXXX")
         run_mtools mcopy -n "${DRIVE}/${rel}" "$tmp_raw" 2>/dev/null || {
             # 変数名は必ず {} で囲む。bash 3.2 はUTF-8ロケールで全角括弧の
             # 先頭バイトを変数名の一部と解釈し、set -u と組み合わさると
@@ -281,7 +281,7 @@ cmd_pull() {
         local tmp_out kind
         if is_text_file "$rel"; then
             kind="TEXT"
-            tmp_out=$(mktemp)
+            tmp_out=$(mktemp "${TMPDIR:-/tmp}/98hdd.XXXXXXXX")
             convert_from_dos "$tmp_raw" "$tmp_out"
             rm -f "$tmp_raw"
         else
@@ -370,7 +370,7 @@ cmd_fd() {
 
         # まず一時ファイルに取り出す（失敗時は既存ファイルに触れない）
         local tmp_raw
-        tmp_raw=$(mktemp)
+        tmp_raw=$(mktemp "${TMPDIR:-/tmp}/98hdd.XXXXXXXX")
         run_mtools mcopy -n -i "$src_spec" "::/${rel}" "$tmp_raw" 2>/dev/null || {
             warn "  コピー失敗: ${rel}（スキップ）"
             rm -f "$tmp_raw"
