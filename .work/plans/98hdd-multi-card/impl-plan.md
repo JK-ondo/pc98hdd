@@ -20,13 +20,21 @@
 
 ```
 tests/
-  run-cards.sh        スイート本体。静的検査 S1〜S8 と、下の 3 本を起動する
-  lib/harness.sh      表明・砂場・イメージ生成・偽 mtools
-  unit.sh             U-S / U-N / U-C / U-L（source して関数を直接呼ぶ）
-  integration.sh      I-B / I-S / I-X / I-N / I-A / I-C
-  cli.sh              A 系（コマンドとして起動）
+  run-cards.sh        前提検査 H1〜H7 と静的検査 S1〜S8。下位スイートを source する
+  lib/harness.sh      表明・砂場・イメージ生成・偽 mtools・sut_eval
+  unit.sh             U-S / U-N / U-L / U-C（source して関数を直接呼ぶ）
+  integration.sh      I-B（後方互換）
+  select.sh           I-S（選択と同定）
+  isolate.sh          I-X（隔離）/ I-N（照合前に何もしない）
+  announce.sh         I-A（選んだカードを告げる）/ I-C（card コマンド）
+  cli.sh              A（コマンドとして起動）
   README.md           走らせ方・ハーネスの仕組み・mise スニペット
 ```
+
+**下位スイートは `source` する**（別プロセスで起動すると件数が集計されない）。
+そのため下位スイートに `exit` を書いてはいけない — ランナーごと終わって残りが
+走らなくなる。当初 3 本の予定だったが 1 ファイルが長くなりすぎたので群ごとに
+分けた（2026-11-17）。
 
 依存は `bash`・`mformat`・`mdir`・`mcopy`・`mmd`・`od`・`shasum` のみ。
 ネットワークも追加インストールも使わない（`nx93rank/tests` と同じ方針）。

@@ -272,7 +272,7 @@ fi
 # =========================================================== 下位スイート
 # source する（別プロセスで起動すると件数が集計されない）。下位スイートは
 # exit を書かない — 書くとランナーごと終わって残りが走らない。
-for suite in unit integration cli; do
+for suite in unit integration select isolate announce cli; do
     f="${here}/${suite}.sh"
     [ -f "$f" ] || continue
     # shellcheck source=/dev/null
