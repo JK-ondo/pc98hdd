@@ -32,10 +32,6 @@ check_deps() {
     done
 }
 
-check_image() {
-    [[ -f "$HDD_IMAGE" ]] || die "HDDイメージが見つかりません: $HDD_IMAGE"
-}
-
 run_mtools() { MTOOLS_SKIP_CHECK=1 "$@"; }
 
 # ── カード（SD カード＝HDDイメージ）の定義と同定 ────────────────────────────
@@ -93,6 +89,9 @@ read_serial() {             # read_serial <image> <offset>
 read_boot_signature() {     # read_boot_signature <image> <offset>
     local img="${1:-}" off="${2:-}" sig
     [[ -f "$img" ]] || return 1
+    # read_serial と同じ番兵。数値でないと算術展開が set -u 下で
+    # bash の生エラーを利用者の画面へ漏らす。
+    [[ "$off" =~ ^[0-9]+$ ]] || { printf '読めない\n'; return 1; }
     sig=$(LC_ALL=C od -An -j $(( off + CARD_SIG_OFFSET )) -N 1 -t x1 "$img" \
           2>/dev/null | LC_ALL=C /usr/bin/awk 'NR == 1 { print $1 }') || true
     printf '%s\n' "${sig:-読めない}"
@@ -153,6 +152,20 @@ load_cards() {
                . "$f" >/dev/null 2>&1
                printf '%s|%s|%s|%s' "$IMAGE" "$OFFSET" "$SERIAL" "$PULL_DIR" ) || true
 
+        # **分割する前に区切り文字の混入を見る。** 分割してしまうと値がずれ、
+        # 「OFFSET が数値でない」のような無関係な文面になって誤りの在りかを
+        # 隠す（実測で確認した）。4 欄なので | はちょうど 3 個のはず。
+        local pipes
+        pipes=$(printf '%s' "$got" | LC_ALL=C /usr/bin/tr -cd '|' | /usr/bin/wc -c \
+                | /usr/bin/tr -d ' ')
+        if [[ "$pipes" != "3" ]]; then
+            error "カード ${name} の設定値に | が含まれています。"
+            error "  この文字はカード情報の区切りに使っているので扱えません。"
+            error "  IMAGE か PULL_DIR のパスを変えてください。"
+            error "  ${f} を見てください。"
+            return 1
+        fi
+
         local c_img c_off c_ser c_pull
         IFS='|' read -r c_img c_off c_ser c_pull <<< "$got"
 
@@ -163,6 +176,24 @@ load_cards() {
         if [[ -n "$missing" ]]; then
             error "カード ${name} の定義に足りない変数があります:${missing}"
             error "  ${f} を見てください。"
+            return 1
+        fi
+
+        # **有無だけでなく形も確かめる。** 形が違うと下流で別の症状に化けて
+        # 出る。実測した 3 通り: 数値でない OFFSET は算術展開が set -u 下で
+        # bash の生エラーを利用者の画面に漏らす。書式の違う SERIAL は
+        # 「カードが違う」と報告されて誤りの在りかを隠す。パスに | が入ると
+        # 行の区切りと衝突して値が切れ、「イメージが無い」ことになる。
+        if [[ ! "$c_off" =~ ^[0-9]+$ ]]; then
+            error "カード ${name} の OFFSET が数値ではありません: ${c_off}"
+            error "  FAT パーティション先頭へのバイト数を書いてください（例 360448）。"
+            error "  ${f} を見てください。"
+            return 1
+        fi
+        if [[ ! "$c_ser" =~ ^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$ ]]; then
+            error "カード ${name} の SERIAL の書式が違います: ${c_ser}"
+            error "  XXXX-XXXX の形（16 進 4 桁・ハイフン・16 進 4 桁）で書いてください。"
+            error "  今挿さっているカードの値は 98hdd card show で見られます。"
             return 1
         fi
 
@@ -257,7 +288,7 @@ select_card() {
 
     # 段 2: 宣言したシリアルと一致するものだけ残す。
     # SERIAL が空なのは暗黙の default だけで、そのときは照合しない。
-    local kept="" kept_n=0 found="" unreadable=""
+    local kept="" kept_n=0 found="" unreadable="" kept_names=""
     while IFS='|' read -r c_name c_img c_off c_ser c_pull; do
         [[ -n "$c_name" ]] || continue
         local got
@@ -273,6 +304,7 @@ select_card() {
         if [[ "$got" == "$c_ser" ]]; then
             kept="${c_name}|${c_img}|${c_off}|${c_ser}|${c_pull}"
             kept_n=$((kept_n + 1))
+            kept_names="${kept_names} ${c_name}"
         fi
     done <<< "$cand"
 
@@ -306,15 +338,6 @@ select_card() {
 
     # 別々のイメージが 2 つ以上マウントされ、それぞれ自分の定義と一致している。
     # ここで「最初の 1 枚」を選ぶと、意図していないカードへ書く道が開く。
-    local kept_names=""
-    while IFS='|' read -r c_name c_img c_off c_ser c_pull; do
-        [[ -n "$c_name" ]] || continue
-        if [[ -n "$c_ser" ]]; then
-            local g2
-            g2=$(read_serial "$c_img" "$c_off") || g2=""
-            [[ "$g2" == "$c_ser" ]] && kept_names="${kept_names} ${c_name}"
-        fi
-    done <<< "$cand"
     error "カードが複数マウントされていて、どれを指すか決められません:${kept_names}"
     error "  -c <名前> で選んでください。"
     return 1
@@ -338,7 +361,12 @@ use_card() {                # use_card [名前]
         <<< "$line"
     CARD_SPEC="${CARD_IMAGE}@@${CARD_OFFSET}"
 
-    verify_card "$line" "$(load_cards)" || return 1
+    # 第 2 引数（カード一覧）は空でよい。これは「一致するカードを名指す」ため
+    # だけに使われ、ここへ来る 3 経路はいずれもそこへ到達しない:
+    # -c 経路は select_card の中で一覧つきの照合を済ませ、自動経路は段 2 で
+    # シリアルが一致済み、暗黙 default は SERIAL が無いので署名の確認で終わる。
+    # 空を渡すことで、1 回の起動で設定を 2 度読まずに済む。
+    verify_card "$line" "" || return 1
 
     if [[ -n "$want" ]]; then how="-c 指定"
     elif [[ -z "$CARD_SERIAL" ]]; then how="カード定義が無いので ~/.98hddrc から"

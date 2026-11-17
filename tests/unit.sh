@@ -251,6 +251,61 @@ if h_want "U-L9"; then
     scratch_drop "$s"
 fi
 
+# ---- U-L12〜U-L14: 値の「形」を見る
+# load_cards は有無だけでなく形も確かめる。形が違うと、下流で別の症状に
+# 化けて出る（実測で 3 通り確認した）。
+if h_want "U-L12"; then
+    # OFFSET が数値でないと $(( )) が set -u 下で bash の生エラーを吐き、
+    # それが利用者の画面に漏れる。E8 の側で止める。
+    s=$(ul_setup)
+    make_image "${s}/img/a.hda" "11112222"
+    cat > "${s}/home/.98hdd/cards/alpha.conf" <<EOF
+IMAGE="${s}/img/a.hda"
+OFFSET=abc
+SERIAL="1111-2222"
+EOF
+    sut_eval "$s" "load_cards"
+    assert_exit "U-L12 offset-not-numeric exit" 1 "$h_last_status"
+    assert_contains "U-L12 offset-not-numeric names-it" "OFFSET" "$h_last_output"
+    assert_lacks "U-L12 offset-not-numeric no-bash-error" "unbound variable" \
+        "$h_last_output"
+    scratch_drop "$s"
+fi
+
+if h_want "U-L13"; then
+    # SERIAL の書式が違うと「カードが違う」と報告されてしまう。利用者の
+    # 誤りは取り違えではなく書式なので、そう言う。
+    s=$(ul_setup)
+    make_image "${s}/img/a.hda" "11112222"
+    cat > "${s}/home/.98hdd/cards/alpha.conf" <<EOF
+IMAGE="${s}/img/a.hda"
+OFFSET=${HARNESS_OFFSET}
+SERIAL="11112222"
+EOF
+    sut_eval "$s" "load_cards"
+    assert_exit "U-L13 serial-malformed exit" 1 "$h_last_status"
+    assert_contains "U-L13 serial-malformed names-it" "SERIAL" "$h_last_output"
+    assert_contains "U-L13 serial-malformed shows-form" "XXXX-XXXX" "$h_last_output"
+    scratch_drop "$s"
+fi
+
+if h_want "U-L14"; then
+    # 行の区切りに | を使っているので、パスに | が入ると値が切れる。
+    # 切れた結果「イメージが無い」ことになり、無関係な文面に化ける。
+    s=$(ul_setup)
+    mkdir -p "${s}/img/we|ird"
+    make_image "${s}/img/we|ird/a.hda" "11112222"
+    cat > "${s}/home/.98hdd/cards/alpha.conf" <<EOF
+IMAGE="${s}/img/we|ird/a.hda"
+OFFSET=${HARNESS_OFFSET}
+SERIAL="1111-2222"
+EOF
+    sut_eval "$s" "load_cards"
+    assert_exit "U-L14 pipe-in-path exit" 1 "$h_last_status"
+    assert_contains "U-L14 pipe-in-path explains" "|" "$h_last_output"
+    scratch_drop "$s"
+fi
+
 if h_want "U-L11"; then
     # **2 枚目が 1 枚目の SERIAL を継がないこと。** .conf はシェルなので、
     # 親で source すると変数が次のカードへ漏れる。1 枚目に SERIAL があって
