@@ -6,7 +6,9 @@ depends = ["verify:*"]
 [tasks."verify:syntax"]
 description = "シェルスクリプトの構文検査"
 run = '''
-for f in 98hdd.sh nx93rank/tests/run.sh nx93rank/tests/run-daily.sh nx93rank/build.sh; do
+for f in 98hdd.sh nx93rank/tests/run.sh nx93rank/tests/run-daily.sh nx93rank/build.sh \
+         tests/run-cards.sh tests/lib/harness.sh tests/unit.sh tests/integration.sh \
+         tests/select.sh tests/isolate.sh tests/announce.sh tests/cli.sh; do
     bash -n "$f" || exit 1
 done
 '''
@@ -23,7 +25,9 @@ description = "変数展開の直後に非ASCIIバイトが来る箇所を検出
 run = '''
 pattern=$(printf '\$[A-Za-z_][A-Za-z_0-9]*[\200-\377]')
 status=0
-for f in 98hdd.sh nx93rank/tests/run.sh nx93rank/tests/run-daily.sh nx93rank/build.sh; do
+for f in 98hdd.sh nx93rank/tests/run.sh nx93rank/tests/run-daily.sh nx93rank/build.sh \
+         tests/run-cards.sh tests/lib/harness.sh tests/unit.sh tests/integration.sh \
+         tests/select.sh tests/isolate.sh tests/announce.sh tests/cli.sh; do
     if LC_ALL=C /usr/bin/grep -n "$pattern" "$f"; then
         echo "${f}: 上記は変数名が非ASCIIバイトまで伸びます。\${name} と波括弧で囲んでください。" >&2
         status=1
@@ -49,6 +53,13 @@ run = "nx93rank/tests/run-daily.sh"
 [tasks."verify:nx93rank-binary"]
 description = "dist/RANK.EXE が RANK.C と同期しているか"
 run = "nx93rank/build.sh --check"
+
+# 複数カード対応の回帰テスト。試験用の FAT16 イメージをその場で作るので
+# 実機のカードには依存しない。HOME を差し替えた砂場で走るので、利用者の
+# ~/.98hddrc と hdd/ には触れない（前提検査 H6 が毎回それを確かめる）。
+[tasks."verify:cards"]
+description = "98hdd の複数カード対応の回帰テスト"
+run = "tests/run-cards.sh"
 
 # RANK.EXE を ia16-elf-gcc（Docker）でビルドする。docker が要るので verify には
 # 繋がない。98 上の QCL RANK.C は保険として残してある。
