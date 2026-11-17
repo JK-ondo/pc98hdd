@@ -36,6 +36,311 @@ check_image() {
 
 run_mtools() { MTOOLS_SKIP_CHECK=1 "$@"; }
 
+# ── カード（SD カード＝HDDイメージ）の定義と同定 ────────────────────────────
+#
+# 複数のカードを挿し替えて使う。98 が同時に認識するのは 1 枚のままなので、
+# このツールも 1 回の起動で 1 枚だけを扱う。
+#
+# 同定は FAT のボリュームシリアル番号で行う。カードではなくイメージを同定する
+# ので、読み書きの対象と粒度が一致する。mtools を起動せず、イメージ全体を
+# 走査せずに読める。
+CARDS_DIR="${HOME}/.98hdd/cards"
+
+# FAT12/16 のブートセクタ内の位置。FAT32 は署名を 0x42、シリアルを 0x43 に
+# 置くので、この 2 つで読むと FAT32 は署名が合わずに弾かれる。PC-98 の DOS は
+# FAT32 を扱えないので、それが正しい振る舞いである。
+#
+# **この 2 つが位置の唯一の出所。** 2 箇所に散ると片方だけ直す欠陥が入る。
+CARD_SIG_OFFSET=38          # 0x26 拡張ブート署名（0x29 でなければシリアル欄は無効）
+CARD_SERIAL_OFFSET=39       # 0x27 シリアル 4 バイト（リトルエンディアン）
+
+# 名前は 1 文字目が [A-Za-z0-9]、2 文字目以降が [A-Za-z0-9_-]。
+# 1 文字目からハイフンを除くのは、名前が選択肢に化けるのを防ぐため
+# （98hdd -c -x pull のような呼び方を生まない）。
+# LC_ALL=C を明示するのは、UTF-8 ロケールでは A-Za-z の範囲が
+# アクセント付き文字まで拾いうるため。
+valid_card_name() {
+    printf '%s' "${1:-}" | LC_ALL=C grep -q '^[A-Za-z0-9][A-Za-z0-9_-]*$'
+}
+
+# ブートセクタからボリュームシリアル番号を読む。XXXX-XXXX を標準出力へ。
+# 署名が 0x29 でなければ何も出さずに 1 を返す。
+#
+# 確かめずに 4 バイト読むと、無関係なバイトをシリアルとして扱い、たまたま
+# 一致すれば別のイメージへ書く。オフセットが FAT の先頭を指していない場合が
+# まさにそれなので、fail closed にする。
+read_serial() {             # read_serial <image> <offset>
+    local img="${1:-}" off="${2:-}" sig serial
+    [[ -f "$img" ]] || return 1
+    [[ "$off" =~ ^[0-9]+$ ]] || return 1
+
+    sig=$(LC_ALL=C od -An -j $(( off + CARD_SIG_OFFSET )) -N 1 -t x1 "$img" \
+          2>/dev/null | LC_ALL=C /usr/bin/awk 'NR == 1 { print $1 }') || true
+    [[ "$sig" == "29" ]] || return 1
+
+    # NF == 4 を要求するのは、オフセットより短いファイルを弾くため。
+    serial=$(LC_ALL=C od -An -j $(( off + CARD_SERIAL_OFFSET )) -N 4 -t x1 "$img" \
+             2>/dev/null | LC_ALL=C /usr/bin/awk 'NR == 1 && NF == 4 {
+                 printf "%s%s-%s%s", toupper($4), toupper($3), toupper($2), toupper($1)
+             }') || true
+    [[ -n "$serial" ]] || return 1
+    printf '%s\n' "$serial"
+}
+
+# ブートセクタの署名をそのまま返す（E9 の文面に実測値を載せるため）。
+read_boot_signature() {     # read_boot_signature <image> <offset>
+    local img="${1:-}" off="${2:-}" sig
+    [[ -f "$img" ]] || return 1
+    sig=$(LC_ALL=C od -An -j $(( off + CARD_SIG_OFFSET )) -N 1 -t x1 "$img" \
+          2>/dev/null | LC_ALL=C /usr/bin/awk 'NR == 1 { print $1 }') || true
+    printf '%s\n' "${sig:-読めない}"
+}
+
+# ディレクトリの実パス。存在しない末尾は文字列のまま残す。
+# シンボリックリンク経由の衝突（仕様 E5）を捕まえるのに要る。片方だけ
+# 解決すると見逃す。
+real_dir() {                # real_dir <path>
+    local p="${1:-}" tail=""
+    while [[ -n "$p" && "$p" != "/" && ! -d "$p" ]]; do
+        tail="/$(basename "$p")${tail}"
+        p=$(dirname "$p")
+    done
+    if [[ -d "$p" ]]; then printf '%s%s\n' "$(cd "$p" && pwd -P)" "$tail"
+    else printf '%s%s\n' "$p" "$tail"; fi
+}
+
+# カードの定義を読む。1 枚 1 行で name|image|offset|serial|pull_dir を出す。
+#
+# bash 3.2 に連想配列が無いので行指向にしてある。並行する添字配列は、
+# 枚数と添字の対応を手で保つ必要があり、1 箇所ずれると別のカードの IMAGE に
+# 別のカードの SERIAL を当てる経路ができる。
+load_cards() {
+    local f name count=0
+
+    if [[ -d "$CARDS_DIR" ]]; then
+        for f in "${CARDS_DIR}"/*.conf; do
+            [[ -e "$f" ]] && count=$((count + 1))
+        done
+    fi
+
+    # 定義が 1 枚も無ければ ~/.98hddrc から暗黙の default を組み立てる。
+    # PULL_DIR は従来どおりの値をそのまま使う（hdd/default にはしない）。
+    # 既存利用者のミラーを動かさないため。SERIAL が空なので照合もしない。
+    if (( count == 0 )); then
+        printf '%s|%s|%s|%s|%s\n' \
+            "default" "$HDD_IMAGE" "$HDD_OFFSET" "" "$PULL_DIR"
+        return 0
+    fi
+
+    local lines="" seen=""
+    for f in "${CARDS_DIR}"/*.conf; do
+        [[ -e "$f" ]] || continue
+        name=$(basename "$f" .conf)
+        if ! valid_card_name "$name"; then
+            error "カード定義の名前に使えない文字があります: ${name}.conf"
+            error "  1 文字目は英数字、2 文字目以降は英数字・_・- だけです。"
+            return 1
+        fi
+
+        # **サブシェルで source する。** 親で source すると変数が次のカードへ
+        # 漏れる。1 枚目に SERIAL があって 2 枚目に無い場合、2 枚目が 1 枚目の
+        # 値を継いで必須変数の検査をすり抜ける。
+        local got
+        got=$( IMAGE=""; OFFSET=""; SERIAL=""; PULL_DIR=""
+               # shellcheck source=/dev/null
+               . "$f" >/dev/null 2>&1
+               printf '%s|%s|%s|%s' "$IMAGE" "$OFFSET" "$SERIAL" "$PULL_DIR" ) || true
+
+        local c_img c_off c_ser c_pull
+        IFS='|' read -r c_img c_off c_ser c_pull <<< "$got"
+
+        local missing=""
+        [[ -n "$c_img" ]] || missing="${missing} IMAGE"
+        [[ -n "$c_off" ]] || missing="${missing} OFFSET"
+        [[ -n "$c_ser" ]] || missing="${missing} SERIAL"
+        if [[ -n "$missing" ]]; then
+            error "カード ${name} の定義に足りない変数があります:${missing}"
+            error "  ${f} を見てください。"
+            return 1
+        fi
+
+        [[ -n "$c_pull" ]] || c_pull="${BASE_DIR}/hdd/${name}"
+
+        # 実パスで衝突を見る。設定の誤りでミラーが混ざるのを防ぐ。
+        local rp other_name other_rp
+        rp=$(real_dir "$c_pull")
+        while IFS='|' read -r other_name other_rp; do
+            [[ -n "$other_name" ]] || continue
+            if [[ "$other_rp" == "$rp" ]]; then
+                error "カード ${other_name} と ${name} の PULL_DIR が同じ場所を指しています:"
+                error "  ${rp}"
+                error "  別々のカードのミラーが混ざるので、どちらかを変えてください。"
+                return 1
+            fi
+        done <<< "$seen"
+        seen="${seen}${name}|${rp}
+"
+        lines="${lines}${name}|${c_img}|${c_off}|${c_ser}|${c_pull}
+"
+    done
+
+    printf '%s' "$lines"
+}
+
+# 1 枚を選ぶ。選んだ行を標準出力へ出す。
+#
+#   -c <名前> あり → 段 1・段 2 を行わず、その 1 枚を照合するだけ
+#   -c なし        → 段 1（IMAGE の存在）→ 段 2（シリアル一致）で絞る
+#
+# 段 2 が無いと最も普通の構成で使えなくなる。BlueSCSI のカードを同じ手順で
+# 2 枚作れば、ラベルもイメージのファイル名も同じになるので、両方の定義が
+# 同じパスを指す。段 1 だけでは「候補 2 つ＝曖昧」と判定されるが、1 枚ずつ
+# 挿す運用では実際に存在するイメージは 1 つなので、シリアルで必ず絞れる。
+select_card() {
+    local want="" cards line
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -c)
+                want="${2:-}"
+                if [[ -z "$want" ]]; then
+                    error "-c にカード名が要ります。"
+                    error "  定義されているカードは 98hdd card list で見られます。"
+                    return 1
+                fi
+                shift 2
+                ;;
+            *) shift ;;
+        esac
+    done
+
+    cards=$(load_cards) || return 1
+
+    local names=""
+    while IFS='|' read -r n _rest; do
+        [[ -n "$n" ]] && names="${names} ${n}"
+    done <<< "$cards"
+
+    if [[ -n "$want" ]]; then
+        line=""
+        while IFS= read -r l; do
+            [[ -n "$l" ]] || continue
+            [[ "${l%%|*}" == "$want" ]] && line="$l"
+        done <<< "$cards"
+        if [[ -z "$line" ]]; then
+            error "カード ${want} は定義されていません。"
+            error "  定義されているのは:${names}"
+            return 1
+        fi
+        verify_card "$line" "$cards" || return 1
+        printf '%s\n' "$line"
+        return 0
+    fi
+
+    # 段 1: IMAGE が存在するものを候補にする。
+    local cand="" c_name c_img c_off c_ser c_pull
+    while IFS='|' read -r c_name c_img c_off c_ser c_pull; do
+        [[ -n "$c_name" ]] || continue
+        [[ -f "$c_img" ]] || continue
+        cand="${cand}${c_name}|${c_img}|${c_off}|${c_ser}|${c_pull}
+"
+    done <<< "$cards"
+
+    # 段 2: 宣言したシリアルと一致するものだけ残す。
+    # SERIAL が空なのは暗黙の default だけで、そのときは照合しない。
+    local kept="" kept_n=0 found=""
+    while IFS='|' read -r c_name c_img c_off c_ser c_pull; do
+        [[ -n "$c_name" ]] || continue
+        if [[ -z "$c_ser" ]]; then
+            kept="${c_name}|${c_img}|${c_off}|${c_ser}|${c_pull}"
+            kept_n=1
+            continue
+        fi
+        local got
+        got=$(read_serial "$c_img" "$c_off") || got=""
+        [[ -n "$got" ]] && found="${found} ${got}"
+        if [[ "$got" == "$c_ser" ]]; then
+            kept="${c_name}|${c_img}|${c_off}|${c_ser}|${c_pull}"
+            kept_n=$((kept_n + 1))
+        fi
+    done <<< "$cand"
+
+    if (( kept_n == 1 )); then
+        printf '%s\n' "$kept"
+        return 0
+    fi
+
+    if (( kept_n == 0 )); then
+        if [[ -n "$found" ]]; then
+            error "挿さっているカードが、どの定義とも一致しません。"
+            error "  読めたシリアル番号:${found}"
+            error "  この値を ~/.98hdd/cards/<名前>.conf の SERIAL に書けば使えます。"
+        else
+            error "使えるカードが見つかりません。"
+            error "  カードを挿すか、-c で明示してください。"
+        fi
+        error "  定義されているのは:${names}"
+        return 1
+    fi
+
+    # 別々のイメージが 2 つ以上マウントされ、それぞれ自分の定義と一致している。
+    # ここで「最初の 1 枚」を選ぶと、意図していないカードへ書く道が開く。
+    local kept_names=""
+    while IFS='|' read -r c_name c_img c_off c_ser c_pull; do
+        [[ -n "$c_name" ]] || continue
+        if [[ -n "$c_ser" ]]; then
+            local g2
+            g2=$(read_serial "$c_img" "$c_off") || g2=""
+            [[ "$g2" == "$c_ser" ]] && kept_names="${kept_names} ${c_name}"
+        fi
+    done <<< "$cand"
+    error "カードが複数マウントされていて、どれを指すか決められません:${kept_names}"
+    error "  -c <名前> で選んでください。"
+    return 1
+}
+
+# 選んだ 1 枚が本当にその定義のものかを確かめる。最初の mtools 呼び出しより
+# 前に通す（仕様 I1）。読み取りも含めて、照合前には何もしない。
+verify_card() {             # verify_card <line> <all-cards>
+    local line="$1" all="${2:-}"
+    local c_name c_img c_off c_ser c_pull
+    IFS='|' read -r c_name c_img c_off c_ser c_pull <<< "$line"
+
+    if [[ ! -f "$c_img" ]]; then
+        error "カード ${c_name} のイメージが見つかりません:"
+        error "  ${c_img}"
+        return 1
+    fi
+
+    # SERIAL が無いのは暗黙の default だけ。照合しない（従来の振る舞い）。
+    [[ -n "$c_ser" ]] || return 0
+
+    local got
+    got=$(read_serial "$c_img" "$c_off") || got=""
+    if [[ -z "$got" ]]; then
+        local sig
+        sig=$(read_boot_signature "$c_img" "$c_off")
+        error "カード ${c_name} のイメージが FAT として読めません。"
+        error "  ${c_img} のオフセット ${c_off} にある拡張ブート署名が 0x${sig} で、"
+        error "  0x29 ではありません。オフセットが違っている可能性が高いです。"
+        error "  （FAT の先頭を指していないと、この位置は別のデータになります）"
+        return 1
+    fi
+    if [[ "$got" != "$c_ser" ]]; then
+        error "カード ${c_name} ではありません。"
+        error "  ${c_name} のシリアル番号: ${c_ser}"
+        error "  実際に挿さっているもの  : ${got}"
+        local o_name o_img o_off o_ser o_pull
+        while IFS='|' read -r o_name o_img o_off o_ser o_pull; do
+            [[ -n "$o_name" ]] || continue
+            [[ "$o_ser" == "$got" ]] && \
+                error "  この値はカード ${o_name} のものです。-c ${o_name} なら一致します。"
+        done <<< "$all"
+        error "  何も読み書きしていません。"
+        return 1
+    fi
+    return 0
+}
+
 # ── テキストファイル判定（拡張子ホワイトリスト方式） ─────────────────────────
 # 以前は file コマンドの内容推定を使っていたが、判定がバージョン・内容により
 # 揺れてバイナリを nkf で破壊した実績があるため（2026-07-14 CRLF.EXE 事故）、
@@ -496,4 +801,6 @@ main() {
     esac
 }
 
-main "$@"
+# 実行されたときだけ main を走らせる。source したときに走ると、関数単位の
+# 試験が 1 本も書けない（source が全部実行してしまう）。
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main "$@"; fi
