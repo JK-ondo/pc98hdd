@@ -61,7 +61,10 @@ is missing.
 
 - `mdir` `mcopy` `mmd` — mtools
 - `nkf` — character encoding conversion
-- `iconv` `file` — shipped with macOS
+- `iconv` `file` `od` — shipped with macOS
+
+`od` reads four bytes of the boot sector to identify a card. mtools is not involved in
+that, so identification works even on an image whose FAT is damaged.
 
 Install mtools and nkf if you do not have them (`brew install mtools nkf`).
 
@@ -72,7 +75,7 @@ Install mtools and nkf if you do not have them (`brew install mtools nkf`).
 For what it is worth, hardly anything in the script is macOS-specific: the image path is
 a default you override in `~/.98hddrc`, and every command it calls is POSIX. Under WSL2
 with `mtools` and `nkf` installed it would most likely run, once you point `HDD_IMAGE`
-and the `file=` line in `~/.mtoolsrc` at the card (`/mnt/e/...`) and mount it with
+at the card (`/mnt/e/...`) and mount it with
 `mount -t drvfs`. Two things would trip you up first:
 
 - **Line endings.** Git for Windows defaults to `core.autocrlf=true`, which would check
@@ -106,25 +109,27 @@ already exist.
 You can clone anywhere you like — just run `98hdd init` and then point `BASE_DIR` in
 `~/.98hddrc` at that directory.
 
-### 2-2. Write `~/.mtoolsrc`
+### 2-2. Point `HDD_IMAGE` and `HDD_OFFSET` at your card
 
-**Nothing works without this.** It is what tells mtools where the FAT16 filesystem
-starts inside the image file. Create `~/.mtoolsrc` with:
+Open `~/.98hddrc` and set two things:
 
-```
-drive p:
-    file="/Volumes/x/HD10_512 200MB.hda"
-    offset=360448
-    fat_bits=16
-    cylinders=820
-    heads=8
-    sectors=17
-    filter
+```sh
+HDD_IMAGE="/Volumes/x/HD10_512 200MB.hda"   # where the image file is
+HDD_OFFSET=360448                           # where the FAT partition starts in it
 ```
 
-> **Note:** `~/.mtoolsrc` is the only place where `offset` actually takes effect.
-> `~/.98hddrc` has an `HDD_OFFSET` entry too, but it is currently unused. When you
-> switch to a different disk image you have to **edit both files**.
+`HDD_OFFSET` is the byte offset of the FAT partition inside the `.hda` file. 360448 is
+right for a BlueSCSI image made the usual way; if yours differs, `98hdd` will tell you
+so rather than reading the wrong place (see Troubleshooting).
+
+> **If you used `98hdd` before November 2026**, you also have a `~/.mtoolsrc` with a
+> `drive p:` block. **It is no longer read.** Copy its `offset=` value into `HDD_OFFSET`
+> in `~/.98hddrc` and you are done — `~/.mtoolsrc` can stay or go, `98hdd` ignores it.
+>
+> This matters because `HDD_OFFSET` used to be **unused**: the real value lived in
+> `~/.mtoolsrc`. If the two disagreed, the tool still worked, because only `~/.mtoolsrc`
+> counted. Now `~/.98hddrc` is the only source, so a stale `HDD_OFFSET` will stop the
+> tool instead of silently reading somewhere else.
 
 ### 2-3. Check that it works
 
@@ -154,6 +159,57 @@ Every Mac-side operation assumes **the card is mounted on the Mac**.
 > ⚠️ **Never touch the card from the Mac while the 98 is running.** The card cannot
 > physically be in both machines at once, and that is the only safety interlock there
 > is. The tool itself does no locking.
+
+### Several cards
+
+If you keep your data on more than one microSD, give each one a card definition and
+`98hdd` will work out which one is inserted. The 98 still reads one at a time; this is
+only about keeping the Mac-side mirrors apart and never writing to the wrong image.
+
+Create one file per card in `~/.98hdd/cards/`:
+
+```sh
+# ~/.98hdd/cards/games.conf
+IMAGE="/Volumes/x/HD10_512 200MB.hda"
+OFFSET=360448
+SERIAL="0C01-0A1F"
+PULL_DIR="$HOME/9801/hdd/games"   # optional; defaults to hdd/<name>
+```
+
+`SERIAL` is the FAT volume serial number of the image — that is what identifies the
+card. **Insert the card and ask:**
+
+```sh
+./98hdd card show
+```
+
+It prints the serial it actually read. Paste that into `SERIAL` and the definition is
+complete. `98hdd card list` then shows every card and whether it is inserted.
+
+Once you have definitions, every command names the card it chose:
+
+```
+$ ./98hdd pull
+[INFO]  カード: games（自動判定）
+```
+
+**Two cards made the same way look identical from the outside** — same volume label,
+same filename, so both definitions point at the same path. That is fine: `98hdd`
+compares the serial inside the image, so it still picks exactly one. If you genuinely
+have two *different* images mounted at once it refuses to guess and asks you to choose
+with `-c <name>`.
+
+```sh
+./98hdd -c games pull       # choose explicitly
+```
+
+`-c` goes **before** the command. Written after it, it is ignored — which is why the
+chosen card is always printed before anything is read or written, so a mistake shows up
+on screen rather than in your data.
+
+**If you define no cards, nothing changes.** `98hdd` falls back to `HDD_IMAGE` in
+`~/.98hddrc` and keeps pulling into `hdd/` exactly as before. You do not have to move
+anything.
 
 ### 3-1. Mac → 98
 
@@ -279,7 +335,10 @@ Messages are in Japanese; they are quoted here as they appear.
 | ------- | ------------- |
 | `コマンドが見つかりません: mdir` (command not found) | mtools is not installed. Same for `nkf` |
 | `HDDイメージが見つかりません` (image not found) | The card is not mounted at `/Volumes/x`. Re-seat it, or check the path in `~/.98hddrc` |
-| `ls` prints nothing, or mojibake | `~/.mtoolsrc` is missing or its `offset` is wrong. See 2-2 |
+| `FAT として読めません` + `拡張ブート署名が 0x..` | `HDD_OFFSET` (or a card's `OFFSET`) does not point at the FAT partition. If you are coming from an older setup, copy `offset=` out of `~/.mtoolsrc`. See 2-2 |
+| `カード ... ではありません` (wrong card) | The inserted card is not the one you asked for with `-c`. The message names the serial it read and which card that is — nothing was read or written |
+| `カードが複数マウントされていて` (ambiguous) | Two different images are mounted at once. Choose with `-c <name>`, or eject one |
+| `挿さっているカードが、どの定義とも一致しません` | The card is there but no definition matches. The message prints the serial it read — paste it into a `.conf` |
 | `ファイル名の衝突` (filename collision) | Two files crush to the same 8.3 name. Rename one and re-run — nothing has been sent yet |
 | `容量不足` (out of space) | Send less, or delete something on the 98. Nothing has been sent yet |
 | `FATとして読めません` (not readable as FAT) | That image uses a game-specific format. Out of scope for `98hdd fd` |
@@ -300,6 +359,7 @@ A fresh clone contains only this:
 ├── SPEC.md          detailed specification (Japanese)
 ├── LICENSE          MIT
 ├── mise.toml        check tasks (mise run verify)
+├── tests/           the Mac-side test suite for 98hdd itself
 └── nx93rank/        extra: a DOS program that periodically resets the NyaHaX'93 high score table
     └── docs/        its contract, decision log and test design (Japanese)
 ```
@@ -316,8 +376,11 @@ The rest accumulates as you use the tool and is not in the repository (it is in
 
 `98hdd init` creates `send/` and `hdd/`. Create `pc98/` and `tools/` yourself.
 
-There are two config files, `~/.98hddrc` (tool settings) and `~/.mtoolsrc` (how to read
-the image). Both live outside the repository.
+Config lives in `~/.98hddrc` (tool settings) and, if you use more than one card,
+`~/.98hdd/cards/<name>.conf` (one per card). Both live outside the repository.
+
+`~/.mtoolsrc` is **no longer read.** It used to hold the only working copy of the
+partition offset; now `~/.98hddrc` and the card definitions are the only source.
 
 ---
 
