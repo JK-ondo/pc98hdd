@@ -111,13 +111,17 @@ if h_want "A5"; then
     write_card "$s" "alpha" "${s}/img/absent-a.hda" "1111-2222"
     write_card "$s" "bravo" "${s}/img/absent-b.hda" "3333-4444"
     fake_mtools_install "${s}/bin" "${s}/mtools.log" 1
-    # FDI ではないファイルを渡す。選択を走らせていれば E4（どれも無い）で
-    # 落ち、走らせていなければ FDI ヘッダの解釈で落ちる。文面で判別する。
+    # FDI ではないファイルを渡す。カードは 2 枚とも不在なので、選択を
+    # 走らせていれば E4（使えるカードが見つかりません）で落ちる。
+    #
+    # **どのエラーが先に出るかは細部なので表明しない。** 見るのは
+    # 「渡したイメージについて述べている」ことと「カードについて述べて
+    # いない」こと。前者が無いと、別の理由で落ちたのを見逃す。
     printf 'not an fdi' > "${s}/img/bogus.fdi"
     run_98hdd "$s" fd "${s}/img/bogus.fdi"
     assert_exit "A5 fd-ignores-cards exit" 1 "$h_last_status"
-    assert_contains "A5 fd-ignores-cards blames-fdi" "FDI" "$h_last_output"
-    assert_lacks "A5 fd-ignores-cards not-card-error" "カードが" "$h_last_output"
+    assert_contains "A5 fd-ignores-cards blames-image" "bogus.fdi" "$h_last_output"
+    assert_lacks "A5 fd-ignores-cards not-card-error" "カード" "$h_last_output"
     scratch_drop "$s"
 fi
 

@@ -243,7 +243,11 @@ fi
 
 # ---- S6 @@ はイメージ指定の組み立てだけに現れる
 # 別の場所でオフセットを足すと、FAT の先頭でない位置を指す経路ができる。
-s6=$(LC_ALL=C grep -n '@@' "$sut" | LC_ALL=C grep -v 'spec=' || true)
+# 正当に現れるのは ①形を説明するコメント ②*SPEC=／*spec= への代入 の 2 つ。
+# それ以外の場所でオフセットを足すと、FAT の先頭でない位置を指す経路ができる。
+s6=$(LC_ALL=C grep -n '@@' "$sut" \
+     | LC_ALL=C grep -v '^[0-9]*: *#' \
+     | LC_ALL=C grep -vi '[a-z_]*spec=' || true)
 if [ -z "$s6" ]; then h_pass "S6 offset-spelling"
 else h_fail "S6 offset-spelling" "@@ が spec の組み立て以外に現れる" "$s6"; fi
 
@@ -282,7 +286,7 @@ done
 # =================================================================== 集計
 printf '\n'
 if [ "$h_fail_count" -eq 0 ]; then
-    printf '前提検査 6 件・ケース %d 件、失敗 0。\n' "$h_ok_count"
+    printf '前提検査 7 件・ケース %d 件、失敗 0。\n' "$h_ok_count"
     exit 0
 fi
 printf 'ケース %d 件成功、%d 件失敗。\n' "$h_ok_count" "$h_fail_count" >&2
