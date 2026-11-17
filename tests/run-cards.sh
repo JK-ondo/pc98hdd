@@ -34,7 +34,9 @@ done
 here=$(cd -- "$(dirname -- "$0")" && pwd)
 root=$(cd -- "${here}/.." && pwd)
 
-export HARNESS_SUT="${root}/98hdd.sh"
+# 被試験対象は SUT_98HDD で差し替えられる。捨てスタブを当てて「どのケースが
+# その欠陥を殺すか」を確かめるために要る（帰属の確認）。
+export HARNESS_SUT="${SUT_98HDD:-${root}/98hdd.sh}"
 export HARNESS_VERBOSE="${verbose}"
 export HARNESS_FILTER="${filter}"
 

@@ -103,7 +103,10 @@ if h_want "I-A5"; then
     done
     run_98hdd "$s" pull
     assert_exit "I-A5 announce-before exit" 0 "$h_last_status"
-    ann=$(printf '%s\n' "$h_last_output" | LC_ALL=C grep -n 'alpha' \
+    # **針は告知の行そのものにする。** カード名で探すと、cmd_pull の
+    # 「展開先: …/hdd/alpha」のような別の行に当たって順序を見たことに
+    # ならない（実測で、告知を操作の後へ動かしてもこのケースが通ってしまった）。
+    ann=$(printf '%s\n' "$h_last_output" | LC_ALL=C grep -n 'カード: ' \
           | /usr/bin/head -1 | /usr/bin/cut -d: -f1)
     mark=$(printf '%s\n' "$h_last_output" | LC_ALL=C grep -n 'MTOOLSMARK' \
           | /usr/bin/head -1 | /usr/bin/cut -d: -f1)

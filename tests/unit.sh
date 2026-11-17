@@ -251,6 +251,27 @@ if h_want "U-L9"; then
     scratch_drop "$s"
 fi
 
+if h_want "U-L11"; then
+    # **2 枚目が 1 枚目の SERIAL を継がないこと。** .conf はシェルなので、
+    # 親で source すると変数が次のカードへ漏れる。1 枚目に SERIAL があって
+    # 2 枚目に無い場合、2 枚目が 1 枚目の値を継いで必須変数の検査を
+    # すり抜ける（ミューテーション M5 がこの欠陥で、殺し手が居なかった）。
+    #
+    # U-L2（SERIAL 欠落）は 1 枚しか置かないので、漏れを観測できない。
+    # 漏れる元が要るので 2 枚置く。
+    s=$(ul_setup)
+    write_card "$s" "alpha" "${s}/img/a.hda" "1111-2222"
+    cat > "${s}/home/.98hdd/cards/bravo.conf" <<EOF
+IMAGE="${s}/img/b.hda"
+OFFSET=${HARNESS_OFFSET}
+EOF
+    sut_eval "$s" "load_cards"
+    assert_exit "U-L11 no-serial-leak exit" 1 "$h_last_status"
+    assert_contains "U-L11 no-serial-leak names-bravo" "bravo" "$h_last_output"
+    assert_contains "U-L11 no-serial-leak names-serial" "SERIAL" "$h_last_output"
+    scratch_drop "$s"
+fi
+
 if h_want "U-L10"; then
     # PULL_DIR の実パス衝突。シンボリックリンク経由でも捕まえること
     # （片方だけ解決すると見逃す）。
